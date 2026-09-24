@@ -116,8 +116,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .edge .lbl { font-weight: 700; }
 .edge .pv { font-family: var(--mono); font-weight: 800; }
 .edge .why { font-style: italic; }
-.e-up { justify-content: center; border-bottom: 1px solid #ffffff10; padding-top: 10px; }
-.e-down { justify-content: center; border-top: 1px solid #ffffff10; padding-bottom: 10px; }
+.e-down { justify-content: center; border-bottom: 1px solid #ffffff10; padding-top: 10px; }
+.e-up { justify-content: center; border-top: 1px solid #ffffff10; padding-bottom: 10px; }
 .sides { display: flex; gap: 8px; padding: 0 8px 6px; }
 .sides .edge { flex: 1; border-radius: 12px; background: #00000030; padding: 7px 9px; min-height: 44px; }
 .e-left { justify-content: flex-start; }

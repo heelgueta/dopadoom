@@ -28,7 +28,8 @@ export function renderCard(g: Game, card: CardInstance): HTMLElement {
   const el = h('div', `card k-${d.kind}`);
   el.dataset.uid = String(card.uid);
   el.innerHTML = `
-    <div class="edge e-up" data-dir="up"></div>
+    <!-- edges sit where your thumb starts: ↓ label on top, ↑ label at the bottom -->
+    <div class="edge e-down" data-dir="down"></div>
     <div class="card-main">
       <div class="card-head">
         <span class="kind">${esc(KIND_LABEL[d.kind] ?? d.kind)}</span>
@@ -45,7 +46,7 @@ export function renderCard(g: Game, card: CardInstance): HTMLElement {
       <div class="edge e-left" data-dir="left"></div>
       <div class="edge e-right" data-dir="right"></div>
     </div>
-    <div class="edge e-down" data-dir="down"></div>
+    <div class="edge e-up" data-dir="up"></div>
     <div class="stamp"></div>
   `;
   updateCard(g, el, card);
