@@ -1,0 +1,12 @@
+{
+  "name": "DOPADOOM",
+  "short_name": "DOPADOOM",
+  "description": "stay awake until 08:00. the feed is your only friend.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "orientation": "portrait",
+  "background_color": "#07070a",
+  "theme_color": "#07070a",
+  "icons": [{ "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
