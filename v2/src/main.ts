@@ -4,7 +4,6 @@
  */
 import '@fontsource/jersey-10/400.css';
 import './styles.css';
-import { CFG } from './config';
 import { Game } from './engine/game';
 import { App } from './ui/app';
 
@@ -21,5 +20,5 @@ function loop(now: number) {
 }
 requestAnimationFrame(loop);
 
-// desktop console: dd.game.s, dd.cfg.CLOCK_DRAIN = 1
-(window as unknown as { dd: unknown }).dd = { game, app, cfg: CFG };
+// desktop console: dd.game.s
+(window as unknown as { dd: unknown }).dd = { game, app };

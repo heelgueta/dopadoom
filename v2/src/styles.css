@@ -1,6 +1,8 @@
-/* DOPADOOM v3 — black, big pixel type, chunky pixel frames, CRT.
-   Numbers are white. Tweaks → COLOR_OPS turns on op colours
-   (+ blue, × cyan, − red, ÷ pink) via #app.colors. */
+/* DOPADOOM v2 — black, big pixel type, chunky pixel frames, CRT.
+   COLOUR RULE: numbers are coloured by their op.
+     +  blue      ×  cyan        (good family)
+     −  red       ÷  pink        (bad family)
+   Post-type colours avoid red/blue so they never read as numbers. */
 
 :root {
   --add: #4da3ff;
@@ -29,12 +31,11 @@ html, body {
 button { font: inherit; color: inherit; text-transform: inherit; cursor: pointer; background: none; border: none; padding: 0; }
 a { color: inherit; }
 
-#app.colors .c-add { color: var(--add); }
-#app.colors .c-mul { color: var(--mul); }
-#app.colors .c-sub { color: var(--sub); }
-#app.colors .c-div { color: var(--div); }
+.c-add { color: var(--add); }
+.c-mul { color: var(--mul); }
+.c-sub { color: var(--sub); }
+.c-div { color: var(--div); }
 .c-dim, .dim { color: var(--dim); }
-.hid { color: var(--dim); font-size: .8em; }
 .small { font-size: .85rem; }
 
 .px-ico, .px-art { height: .8em; width: auto; display: inline-block; vertical-align: -0.05em; }
@@ -61,14 +62,7 @@ a { color: inherit; }
 
 #chips { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 10px; }
 .chip { height: 50px; display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 0 4px; font-size: 1.1rem; font-weight: 700; line-height: 1; overflow: hidden; }
-.chip .mod { display: inline-flex; align-items: center; }
-.chip .px-ico { height: .7em; }
-.chip.armed { color: var(--sub); flex-direction: column; font-size: .8rem; }
-.chip.armed .px-ico { height: 14px; }
-.chip.lifted { opacity: .25; }
-.chip { touch-action: none; }
-.ghost { position: fixed; z-index: 200; pointer-events: none; display: flex; align-items: center; justify-content: center; gap: 0 4px; font-size: 1.1rem; background: #000; }
-.ghost .px-ico { height: .7em; }
+.chip .mod small { font-size: .6em; margin-left: 1px; }
 
 /* ── stage + posts ───────────────────────────────────── */
 
@@ -91,27 +85,16 @@ a { color: inherit; }
 .e-down { padding-top: 20px; }
 .e-up { padding-bottom: 22px; }
 
-.head { display: flex; justify-content: flex-end; padding: 10px 24px 0; }
+.head { display: flex; justify-content: space-between; align-items: baseline; padding: 10px 24px 0; }
+.ptype { font-size: 1.15rem; font-weight: 700; letter-spacing: .06em; }
 .handle { font-size: .8rem; color: var(--dim); text-transform: none; }
-.pname { display: flex; flex-direction: column; align-items: center; line-height: .9; }
-.pbase { font-size: 3.4rem; letter-spacing: .04em; }
-.pmods { font-size: 1.5rem; color: var(--dim); }
-.glitch .pname { animation: jitter .35s steps(2) infinite; }
-.glitch .frame { animation: jitter .5s steps(2) infinite reverse; }
-@keyframes jitter { 0% { transform: translate(0,0); } 25% { transform: translate(3px,-2px) skewX(6deg); } 50% { transform: translate(-3px,1px); } 75% { transform: translate(1px,2px) skewX(-4deg); } }
-.edge.reacted .op { text-decoration: underline; text-decoration-thickness: 3px; text-underline-offset: 5px; }
 
 .mid { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; gap: 6px; }
 .e-left, .e-right { flex: 0 1 auto; min-width: 0; }
 .center { display: flex; flex-direction: column; align-items: center; gap: 8px; flex: 1; }
-.adnum { font-size: 5rem; line-height: 1; }
-.is-ad .pname, .is-captcha .pname { opacity: .5; }
-.cap-q { font-size: 1.2rem; text-align: center; margin-top: 6px; }
-.cap-q .px-ico { height: .7em; }
-.tiles { display: grid; grid-template-columns: repeat(3, 56px); gap: 8px; margin-top: 8px; }
-.tile { height: 56px; font-size: 1.8rem; border: 3px solid var(--fg); clip-path: var(--notch); background: #000; }
-.tile.done { opacity: .15; }
-.tile:active { background: #222; }
+.art .px-art { height: clamp(70px, 24vw, 130px); opacity: .85; }
+.ad-live .art { display: none; }
+.adnum { font-size: 5rem; font-weight: 700; line-height: 1; color: #ffe14d; }
 .adskip { font-size: 1rem; text-align: center; }
 
 .rail { position: absolute !important; right: 16px; bottom: 74px; display: flex; flex-direction: column; align-items: center; gap: 16px; }
@@ -124,9 +107,7 @@ a { color: inherit; }
 
 .menu { position: absolute !important; right: 64px; bottom: 70px; display: none; flex-direction: column; min-width: 180px; background: #000 !important; padding: 4px; z-index: 5 !important; }
 .menu.show { display: flex; }
-.mi { display: flex; align-items: center; gap: 12px; font-size: 1.4rem; padding: 10px 12px; text-align: left; }
-.mi .px-ico { height: 1em; }
-.mi .hid { margin-left: auto; }
+.mi { display: flex; justify-content: space-between; gap: 16px; font-size: 1.3rem; padding: 10px 12px; text-align: left; }
 .mi:active { background: #222; }
 
 .stamp {
@@ -153,31 +134,26 @@ a { color: inherit; }
 
 /* ── notifications ───────────────────────────────────── */
 
-#notif { position: absolute; top: 64px; left: 14px; right: 14px; z-index: 40; }
+#notif { position: absolute; top: 64px; left: 14px; right: 14px; z-index: 10; }
 .nb { position: relative; padding: 4px 8px 10px; touch-action: none; background: #000; }
 .nfrom { font-size: 1.2rem; font-weight: 700; }
 .nouts { display: flex; justify-content: space-between; gap: 8px; font-size: 1.05rem; margin-top: 2px; }
 .nouts span { white-space: nowrap; }
 .nbar { position: absolute; left: 0; bottom: 0; height: 4px; background: var(--fg); }
 
-/* ── traps (inside the stage, HUD stays visible) ───── */
+/* ── website trap ────────────────────────────────────── */
 
-#trap { position: absolute; inset: 0; z-index: 30; display: none; }
-#trap.show { display: block; }
-.site { position: absolute; inset: 0; background: #fff; color: #000; text-align: center; }
+#website { position: absolute; inset: 0; z-index: 50; display: none; }
+#website.show { display: block; }
+.site { position: absolute; inset: 0; background: #fff; color: #000; padding-top: env(safe-area-inset-top); text-align: center; }
 .url { background: #ccc; padding: 10px; font-size: .9rem; text-transform: none; }
-.blink { font-size: 2.6rem; color: #f00; margin-top: 18px; animation: throb .4s steps(2) infinite; }
-.sitebody { font-size: 1.4rem; margin-top: 8px; }
-.decoy { position: absolute; max-width: 55%; background: #00c000; color: #fff; font-size: 1.3rem; padding: 14px 16px; clip-path: var(--notch); }
+.blink { font-size: 2.6rem; font-weight: 700; color: #f00; margin-top: 24px; animation: throb .4s steps(2) infinite; }
+.sitebody { font-size: 1.4rem; margin-top: 12px; }
+.decoy { position: absolute; max-width: 55%; background: #00c000; color: #fff; font-size: 1.3rem; font-weight: 700; padding: 14px 16px; clip-path: var(--notch); }
 .decoy .px-ico { height: .7em; }
 .popup { position: absolute; width: 40%; background: #fff; border: 4px solid #00f; padding: 30px 8px 12px; font-size: 1rem; box-shadow: 6px 6px 0 #000; }
 .realx { position: absolute; top: 3px; right: 3px; width: 24px; height: 24px; border: 2px solid #999; color: #777; display: flex; align-items: center; justify-content: center; }
 .realx .px-ico { height: 10px; }
-.game { position: absolute; inset: 0; background: #1a0033; text-align: center; overflow: hidden; }
-.gtitle { font-size: 2.2rem; margin-top: 16px; color: #ffe14d; animation: throb .5s steps(2) infinite; }
-.gsub { font-size: 1.3rem; }
-.target { position: absolute; width: 58px; height: 58px; background: #ffe14d; border: 4px solid #fff; clip-path: var(--notch); animation: throb .3s steps(2) infinite; }
-.install { background: #ff2d8a; font-size: 1.6rem; }
 
 /* ── overlays / sheets ───────────────────────────────── */
 
@@ -201,8 +177,6 @@ a { color: inherit; }
 .row { display: flex; gap: 8px; }
 .row .btn { flex: 1; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-.grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
-.old a { color: var(--fg); }
 .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .stats div { display: flex; flex-direction: column; border: 2px solid #333; padding: 6px 2px; }
 .stats span { font-size: .75rem; color: var(--dim); }
@@ -221,7 +195,7 @@ a { color: inherit; }
 .chip-big { font-size: 2.4rem; font-weight: 700; padding: 10px; display: flex; justify-content: center; gap: 10px; }
 .help { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 1.25rem; }
 .help .wide { grid-column: span 2; }
-.help .px-ico { height: .8em; vertical-align: -0.05em; }
+.help .px-ico { height: .8em; }
 .tw { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: .95rem; padding: 6px 0; border-bottom: 1px solid #222; }
 .tw.col { flex-direction: column; align-items: stretch; }
 .tw-top { display: flex; justify-content: space-between; }

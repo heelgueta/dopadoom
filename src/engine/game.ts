@@ -1,30 +1,26 @@
 /**
- * GAME — state + rules, no DOM. The UI calls act()/update() and listens.
+ * GAME v3 — state + rules, no DOM.
  *
- *   ↑ skip     next post
- *   ↓ back     previous (non-blocked) post
- *   ← dislike  once per post, then next post
- *   → like     once per post, then next post
- *   SAVE       (bookmark button) take the post's effect INSTEAD of a swipe, then next
- *   BLOCK      (⋮ menu) remove the post for good, then next
- *   REPORT     (⋮ menu) same, but pays off only on fake news
+ *   ↑ skip · ↓ back · ← dislike · → like      → base stat ± points
+ *        (saved effects modify it left → right, repeat ↑/↓ decays)
+ *   ← / → again:  same reaction = +0 · opposite reaction = dopa × REREACT_MULT
+ *        (either way you move on)
+ *   SAVE     adds the post's effect to your chips. no points. you STAY.
+ *   REPORT   dopa × post.report, post removed, next
+ *   BLOCK    dopa × post.block,  post removed, next
+ *   ads      unskippable while the timer runs. real: pay + wait longer,
+ *            scam: website trap, game: playable-ad trap
+ *   CAPTCH   tap the tiles in order to get through
  *
- * Every action applies an op to dopa, then your saved effects modify the gain
- * left → right (order matters), then repeat-decay for ↑/↓.
- *
- * MODES (how the night hurts you):
- *   upkeep  every N actions you PAY a growing amount
- *   quota   every N actions you must HAVE a growing amount
- *   clock   dopa drains in real time
+ * MODES: clock (real-time drain) · upkeep (pay every N moves) · quota (have N)
  */
 import { CFG } from '../config';
-import { NOTIFS } from '../content/notifs';
-import { AD_TYPE, GIFTS, POST_TYPES, PREMIUM_TYPE, TUTORIAL } from '../content/posts';
 import type {
-  Action, Check, Dir, GameState, ModeId, Notif, Op, Phase, Post, PostType, Result, TallyStep, Website,
+  Action, AdKind, CaptchaState, Check, Dir, GameState, ModeId, Notif, Phase, Post, PostDef, Result, TallyStep, Trap,
 } from '../types';
-import { fmt, makeRng, randomSeed, round2, weightedPick } from '../util';
-import { applyOp, modCls, modText, OP_CLS, opText, parseMod, parseTemplate } from './ops';
+import { makeRng, randomSeed, round2, weightedPick } from '../util';
+import { applyTransform, MODIFIERS, NOTIFS, POSTS, resolveSave, roll, rollSave, scaleSave } from './data';
+import { modText, modValueCls, multCls, multText, signCls, signedText } from './ops';
 
 /* ── events ─────────────────────────────────────────────────────────── */
 
@@ -39,14 +35,14 @@ export interface ActEvent {
 export interface Events {
   acted: ActEvent;
   denied: { action: Action; reason: string };
-  adTry: { cost: number; add: number };
+  adTry: { cost: number };
   float: { amount: number; label: string };
   toast: string;
   notif: Notif | null;
-  website: Website | null;
+  trap: Trap | null;
   phase: Phase;
   effects: undefined;
-  adDone: Post;
+  refresh: undefined;
 }
 
 type Handler<T> = (p: T) => void;
@@ -59,7 +55,7 @@ class Emitter<E> {
 /* ── records ────────────────────────────────────────────────────────── */
 
 export interface Rec { runs: number; wins: number; best: number }
-const REC_KEY = 'dopadoom2.records';
+const REC_KEY = 'dopadoom3.records';
 export function loadRecords(): Record<string, Rec> {
   try { return JSON.parse(localStorage.getItem(REC_KEY) ?? '{}'); } catch { return {}; }
 }
@@ -74,9 +70,9 @@ function saveRecord(mode: ModeId, minute: number, won: boolean): void {
 }
 
 export const MODES: { id: ModeId; name: string; line: string }[] = [
+  { id: 'clock', name: 'CLOCK', line: 'DOPA DRAINS IN REAL TIME' },
   { id: 'upkeep', name: 'UPKEEP', line: 'PAY DOPA EVERY FEW MOVES' },
   { id: 'quota', name: 'QUOTA', line: 'HAVE ENOUGH DOPA EVERY FEW MOVES' },
-  { id: 'clock', name: 'CLOCK', line: 'DOPA DRAINS IN REAL TIME' },
 ];
 
 /* ── game ───────────────────────────────────────────────────────────── */
@@ -84,12 +80,12 @@ export const MODES: { id: ModeId; name: string; line: string }[] = [
 export class Game extends Emitter<Events> {
   s!: GameState;
   private rng: () => number = Math.random;
-  /** uid of the post the UI is currently showing (ads only tick while seen) */
+  /** uid of the post the UI is showing (ad timers only tick while it's seen) */
   viewing = -1;
 
   constructor() {
     super();
-    this.start('upkeep');
+    this.start('clock');
     this.s.phase = 'menu';
   }
 
@@ -98,44 +94,74 @@ export class Game extends Emitter<Events> {
     this.s = {
       mode, seed, phase: 'playing', paused: false,
       dopa: CFG.START_DOPA, minute: 0, turn: 0, level: 0,
-      feed: [], index: 0, effects: [], notif: null, website: null,
-      postsSinceAd: 0, uid: 1,
-      stats: { actions: 0, liked: 0, disliked: 0, saved: 0, blocked: 0, ads: 0, peak: CFG.START_DOPA },
+      feed: [], index: 0, effects: [], notif: null, trap: null, uid: 1,
+      stats: { moves: 0, liked: 0, disliked: 0, saved: 0, blocked: 0, reported: 0, peak: CFG.START_DOPA },
       deathMsg: '',
     };
-    // the first post is always the tutorial one: ↑+1 ↓+1 ←×2 →+1, save +2↑
-    this.s.feed.push(this.makePost(POST_TYPES[0], TUTORIAL));
+    // always open on a plain CUTE
+    const first = POSTS.find((p) => p.name === 'CUTE') ?? POSTS[0];
+    this.s.feed.push(this.makePost(first, false));
     this.emit('notif', null);
-    this.emit('website', null);
+    this.emit('trap', null);
     this.emit('effects', undefined);
     this.emit('phase', 'playing');
   }
 
   current(): Post { return this.s.feed[this.s.index]; }
+  hour(): number { return Math.floor(this.s.minute / 60); }
   get clockMode(): boolean { return this.s.mode === 'clock'; }
 
   /* ── feed ── */
 
-  private makePost(type: PostType, template?: string, ad?: 'normal' | 'premium'): Post {
-    const t = parseTemplate(template ?? type.templates[Math.floor(this.rng() * type.templates.length)]);
-    const secs = ad === 'premium' ? CFG.PREMIUM_SECS : Math.round(CFG.AD_SECS_MIN + this.rng() * Math.max(0, CFG.AD_SECS_MAX - CFG.AD_SECS_MIN));
+  private makePost(def: PostDef, modify = true): Post {
+    const r = this.rng;
+    const stats = {
+      up: roll(def.stats.up, r), down: roll(def.stats.down, r), left: roll(def.stats.left, r), right: roll(def.stats.right, r),
+    };
+    let save = resolveSave(def.save, r);
+    let report = def.report;
+    let block = def.block;
+    let name = def.name;
+
+    if (modify && def.kind !== 'special') {
+      const hour = this.hour();
+      const variants = MODIFIERS.filter((m) => m.group === 'variant' && m.minHour <= hour && (!m.appliesTo || m.appliesTo === def.kind));
+      const mults = MODIFIERS.filter((m) => m.group === 'mult' && m.minHour <= hour);
+      const chosen = [];
+      if (variants.length && r() < CFG.VARIANT_CHANCE) chosen.push(weightedPick(variants, (m) => m.weight, r()));
+      if (mults.length && r() < CFG.MULT_CHANCE) chosen.push(weightedPick(mults, (m) => m.weight, r()));
+      for (const m of chosen) {
+        if (!m) continue;
+        name += m.name;
+        for (const d of Object.keys(m.stats) as Dir[]) stats[d] = applyTransform(stats[d], m.stats[d]!);
+        if (save && m.save !== undefined) save = scaleSave(save, m.save);
+        if (m.report !== undefined) report = m.report;
+        if (m.block !== undefined) block = m.block;
+      }
+    }
+
+    const secs = Math.round(CFG.AD_SECS_MIN + r() * Math.max(0, CFG.AD_SECS_MAX - CFG.AD_SECS_MIN));
     return {
-      uid: this.s.uid++, type, handle: `@user${Math.floor(this.rng() * 9000 + 1000)}`, art: Math.floor(this.rng() * 1e9),
-      acts: t.acts, save: t.save, block: t.block, report: t.report,
-      ad: ad ? { premium: ad === 'premium', left: secs, tries: 0, done: false } : null,
+      uid: this.s.uid++, name, def, stats, save, report, block,
+      ad: def.ad ? { kind: def.ad, left: secs, tries: 0, done: false } : null,
+      captcha: def.special === 'captcha' ? this.newCaptcha() : null,
       reacted: '', saved: false, blocked: false, leaves: { up: 0, down: 0 },
     };
   }
 
-  private spawn(): Post {
-    const s = this.s;
-    s.postsSinceAd++;
-    const due = s.postsSinceAd >= CFG.AD_EVERY + 2 || (s.postsSinceAd >= CFG.AD_EVERY && this.rng() < 0.5);
-    if (due) {
-      s.postsSinceAd = 0;
-      return this.rng() < CFG.PREMIUM_CHANCE ? this.makePost(PREMIUM_TYPE, undefined, 'premium') : this.makePost(AD_TYPE, undefined, 'normal');
+  private newCaptcha(): CaptchaState {
+    const tiles = Array.from({ length: CFG.CAPTCHA_TILES }, (_, i) => i + 1);
+    for (let i = tiles.length - 1; i > 0; i--) {
+      const j = Math.floor(this.rng() * (i + 1));
+      [tiles[i], tiles[j]] = [tiles[j], tiles[i]];
     }
-    return this.makePost(weightedPick(POST_TYPES, (t) => t.weight, this.rng()) ?? POST_TYPES[0]);
+    return { tiles, next: 1 };
+  }
+
+  private spawn(): Post {
+    const hour = this.hour();
+    const pool = POSTS.filter((p) => p.minHour <= hour);
+    return this.makePost(weightedPick(pool, (p) => p.weight, this.rng()) ?? POSTS[0]);
   }
 
   private forwardIndex(): number {
@@ -152,61 +178,43 @@ export class Game extends Emitter<Events> {
 
   /* ── rules ── */
 
-  /** null = allowed, otherwise a SHORT reason (shown in caps on the card) */
+  /** null = allowed, else a short reason */
   blockReason(p: Post, a: Action): string | null {
-    const s = this.s;
+    if (p.captcha) return 'CAPTCHA';
     if (p.ad && !p.ad.done) return 'AD';
     if (a === 'down' && this.backIndex() === null) return 'NOTHING BEHIND';
-    if ((a === 'left' || a === 'right') && p.reacted) return p.reacted.toUpperCase();
     if (a === 'save') {
       if (!p.save) return 'NOTHING TO SAVE';
       if (p.saved) return 'SAVED';
-      if (s.effects.length >= CFG.SAVE_SLOTS) return 'SLOTS FULL';
+      if (this.s.effects.length >= CFG.SAVE_SLOTS) return 'SLOTS FULL';
     }
     return null;
   }
 
-  private opFor(p: Post, a: Action): Op | null {
-    if (a === 'save') return null;
-    if (a === 'block') return p.block;
-    if (a === 'report') return p.report;
-    return p.acts[a];
-  }
-
-  /**
-   * THE SCORING PIPELINE. roll=false for previews: coin-flip ops return NaN
-   * (the UI shows the op itself instead of a number).
-   */
-  compute(p: Post, a: Action, roll: boolean): Result {
-    const s = this.s;
-    let op = this.opFor(p, a);
-    const steps: TallyStep[] = [];
-    if (!op) return { total: 0, steps };
-    if (op.alt) {
-      if (!roll) return { total: NaN, steps };
-      op = this.rng() < 0.5 ? { k: op.k, n: op.n } : op.alt;
-    }
-    let v = applyOp(s.dopa, op) - s.dopa;
-    steps.push({ text: opText(op), cls: OP_CLS[op.k], after: v });
-
-    if (a === 'up' || a === 'down' || a === 'left' || a === 'right') {
-      const dir: Dir = a;
-      for (const e of s.effects) {
-        for (const m of e.mods) {
-          if (m.dir !== 'all' && m.dir !== dir) continue;
-          v = m.k === '+' ? v + m.n : v * m.n;
-          steps.push({ text: modText(m), cls: modCls(m), after: v, effect: e.uid });
-        }
+  /** swipe scoring: base stat → saved effects L→R → repeat decay */
+  private swipeResult(p: Post, d: Dir): Result {
+    let v = p.stats[d];
+    const steps: TallyStep[] = [{ text: signedText(v), cls: signCls(v), after: v }];
+    for (const e of this.s.effects) {
+      for (const m of e.mods) {
+        if (!m.dirs.includes(d)) continue;
+        v = m.k === '+' ? v + m.n : v * m.n;
+        steps.push({ text: modText(m), cls: modValueCls(m.k, m.n), after: v, effect: e.uid, mod: m });
       }
-      if ((dir === 'up' || dir === 'down') && v > 0) {
-        const f = Math.max(0, 1 - CFG.REPEAT_DECAY_STEP * p.leaves[dir]);
-        if (f < 1) {
-          v *= f;
-          steps.push({ text: `×${fmt(f)} REPEAT`, cls: 'c-dim', after: v });
-        }
+    }
+    if ((d === 'up' || d === 'down') && v > 0) {
+      const f = Math.max(0, 1 - CFG.REPEAT_DECAY_STEP * p.leaves[d]);
+      if (f < 1) {
+        v *= f;
+        steps.push({ text: `${multText(f)} REPEAT`, cls: 'c-dim', after: v });
       }
     }
     return { total: round2(v), steps };
+  }
+
+  private multResult(f: number, tag: string): Result {
+    const total = round2(this.s.dopa * (f - 1));
+    return { total, tag, steps: [{ text: `DOPA ${multText(f)}`, cls: multCls(f), after: total }] };
   }
 
   act(a: Action): boolean {
@@ -214,6 +222,7 @@ export class Game extends Emitter<Events> {
     if (s.phase !== 'playing' || s.paused) return false;
     const p = this.current();
 
+    // unskippable ad: swipes and save count as skip attempts (⋮ is disabled while it plays)
     if (p.ad && !p.ad.done) { this.adTry(p); return false; }
     const reason = this.blockReason(p, a);
     if (reason) {
@@ -223,26 +232,58 @@ export class Game extends Emitter<Events> {
       return false;
     }
 
-    const result = this.compute(p, a, true);
-    this.changeDopa(result.total);
-
+    let result: Result;
+    let move: 'next' | 'back' | 'stay' = 'next';
     switch (a) {
-      case 'up': case 'down': p.leaves[a]++; break;
-      case 'left': p.reacted = 'disliked'; s.stats.disliked++; break;
-      case 'right': p.reacted = 'liked'; s.stats.liked++; break;
-      case 'save':
-        p.saved = true; s.stats.saved++;
-        s.effects.push({ uid: s.uid++, mods: p.save ?? [], color: p.type.color });
-        this.emit('effects', undefined);
+      case 'up':
+      case 'down':
+        result = this.swipeResult(p, a);
+        p.leaves[a]++;
+        if (a === 'down') move = 'back';
         break;
-      case 'block': case 'report': p.blocked = true; s.stats.blocked++; break;
+      case 'left':
+      case 'right': {
+        const want = a === 'right' ? 'liked' : 'disliked';
+        if (p.reacted === want) {
+          result = { total: 0, tag: 'SAME', steps: [{ text: 'SAME', cls: 'c-dim', after: 0 }] };
+        } else if (p.reacted) {
+          result = this.multResult(CFG.REREACT_MULT, 'FLIP');
+          p.reacted = want;
+        } else {
+          result = this.swipeResult(p, a);
+          p.reacted = want;
+          if (a === 'right') s.stats.liked++; else s.stats.disliked++;
+        }
+        break;
+      }
+      case 'save': {
+        const mods = rollSave(p.save ?? [], this.rng);
+        s.effects.push({ uid: s.uid++, mods, from: p.name });
+        p.saved = true;
+        s.stats.saved++;
+        this.emit('effects', undefined);
+        result = { total: 0, tag: 'SAVED', steps: [] };
+        move = 'stay';
+        break;
+      }
+      case 'report':
+        result = this.multResult(p.report, 'REPORTED');
+        p.blocked = true;
+        s.stats.reported++;
+        break;
+      case 'block':
+        result = this.multResult(p.block, 'BLOCKED');
+        p.blocked = true;
+        s.stats.blocked++;
+        break;
     }
-    if (p.ad) s.stats.ads++;
 
-    s.index = a === 'down' ? this.backIndex() ?? s.index : this.forwardIndex();
+    this.changeDopa(result.total);
+    if (move === 'back') s.index = this.backIndex() ?? s.index;
+    else if (move === 'next') s.index = this.forwardIndex();
     const check = this.tickTurn();
     this.emit('acted', { action: a, from: p, to: this.current(), result, check });
-    if (!s.notif && this.rng() < CFG.NOTIF_CHANCE) this.spawnNotif();
+    if (!this.clockMode && !s.notif && this.rng() < CFG.NOTIF_CHANCE * 3) this.spawnNotif();
     this.checkEnd();
     return true;
   }
@@ -259,14 +300,40 @@ export class Game extends Emitter<Events> {
     this.checkEnd();
   }
 
+  /* ── captcha ── */
+
+  captchaTap(label: number): void {
+    const s = this.s;
+    const p = this.current();
+    const c = p.captcha;
+    if (!c || s.phase !== 'playing' || s.paused) return;
+    if (label === c.next) {
+      c.next++;
+      if (c.next > c.tiles.length) {
+        p.captcha = null;
+        s.index = this.forwardIndex();
+        const check = this.tickTurn();
+        this.emit('acted', { action: 'up', from: p, to: this.current(), result: { total: 0, tag: 'HUMAN', steps: [] }, check });
+        this.checkEnd();
+        return;
+      }
+    } else {
+      this.addDopa(-CFG.BAD_MOVE_PENALTY, 'CAPTCHA');
+      p.captcha = this.newCaptcha();
+    }
+    this.emit('refresh', undefined);
+  }
+
   /* ── modes ── */
 
   private tickTurn(): Check | null {
     const s = this.s;
     s.turn++;
-    s.stats.actions++;
+    s.stats.moves++;
     if (this.clockMode) return null;
     s.minute += CFG.MIN_PER_TURN;
+    // tolerance: a big bank leaks every move (keeps × multipliers from compounding forever)
+    if (s.dopa > 0) this.changeDopa(-s.dopa * CFG.TURN_TOLERANCE);
     const every = s.mode === 'upkeep' ? CFG.UPKEEP_EVERY : CFG.QUOTA_EVERY;
     if (s.turn % every !== 0) return null;
     const amount = this.checkAmount();
@@ -289,7 +356,6 @@ export class Game extends Emitter<Events> {
       : Math.round(CFG.QUOTA_BASE * Math.pow(CFG.QUOTA_GROWTH, s.level));
   }
 
-  /** next checkpoint for the HUD. in = actions left */
   nextCheck(): { kind: 'upkeep' | 'quota'; amount: number; in: number } | null {
     const s = this.s;
     if (s.mode === 'clock') return null;
@@ -298,20 +364,20 @@ export class Game extends Emitter<Events> {
   }
 
   drainRate(): number {
-    const hour = Math.floor(this.s.minute / 60);
+    const s = this.s;
     let r = 0;
     if (this.clockMode) {
-      r = CFG.CLOCK_DRAIN * (1 + CFG.CLOCK_DRAIN_GROWTH * hour);
-      if (this.s.dopa > 0) r += this.s.dopa * CFG.CLOCK_TOLERANCE; // the bigger the bank, the faster it leaks
+      r = CFG.CLOCK_DRAIN * (1 + CFG.CLOCK_DRAIN_GROWTH * this.hour());
+      if (s.dopa > 0) r += s.dopa * CFG.CLOCK_TOLERANCE;
     }
-    if (this.s.phase === 'website') r += CFG.WEBSITE_DRAIN;
+    if (s.phase === 'trap') r += CFG.TRAP_DRAIN;
     return r;
   }
 
-  /** real-time part: clock drain, ad timers, notifications, website drain */
+  /** real-time part */
   update(dt: number): void {
     const s = this.s;
-    if (s.paused || (s.phase !== 'playing' && s.phase !== 'website')) return;
+    if (s.paused || (s.phase !== 'playing' && s.phase !== 'trap')) return;
     if (this.clockMode) s.minute += dt / CFG.CLOCK_SEC_PER_MIN;
     const drain = this.drainRate();
     if (drain) this.changeDopa(-drain * dt);
@@ -319,19 +385,26 @@ export class Game extends Emitter<Events> {
     const p = this.current();
     if (s.phase === 'playing' && p.ad && !p.ad.done && this.viewing === p.uid) {
       p.ad.left -= dt;
-      if (p.ad.left <= 0) { p.ad.done = true; this.emit('adDone', p); }
+      if (p.ad.left <= 0) { p.ad.done = true; this.emit('refresh', undefined); }
+    }
+    const t = s.trap;
+    if (t?.kind === 'game') {
+      // the playable-ad target bounces around
+      t.x += t.vx * dt; t.y += t.vy * dt;
+      if (t.x < 4 || t.x > 76) { t.vx *= -1; t.x = Math.max(4, Math.min(76, t.x)); }
+      if (t.y < 30 || t.y > 80) { t.vy *= -1; t.y = Math.max(30, Math.min(80, t.y)); }
     }
     if (s.notif) {
       s.notif.left -= dt;
       if (s.notif.left <= 0) this.resolveNotif('wait');
     }
+    if (this.clockMode && !s.notif && s.phase === 'playing' && this.rng() < CFG.NOTIF_CHANCE * dt) this.spawnNotif();
     this.checkEnd();
   }
 
   private checkEnd(): void {
     const s = this.s;
     if (s.phase === 'over' || s.phase === 'won' || s.phase === 'menu') return;
-    // sleep is checked BEFORE the win: the last upkeep at 08:00 can still kill you
     if (!CFG.GOD_MODE && s.dopa <= CFG.SLEEP_AT) {
       if (!s.deathMsg) s.deathMsg = 'OUT OF DOPA';
       this.sleep();
@@ -348,9 +421,9 @@ export class Game extends Emitter<Events> {
     const s = this.s;
     if (s.phase === 'over') return;
     s.notif = null;
-    s.website = null;
+    s.trap = null;
     this.emit('notif', null);
-    this.emit('website', null);
+    this.emit('trap', null);
     saveRecord(s.mode, s.minute, false);
     this.setPhase('over');
   }
@@ -360,66 +433,75 @@ export class Game extends Emitter<Events> {
     this.emit('phase', p);
   }
 
-  /* ── ads + website trap ── */
+  /* ── ads + traps ── */
 
   private adTry(p: Post): void {
-    if (!p.ad) return;
-    if (p.ad.premium) { this.openWebsite(p); return; }
-    p.ad.tries++;
-    const cost = p.ad.tries * CFG.AD_TRY_COST;
-    p.ad.left += CFG.AD_TRY_ADD_SECS;
+    const ad = p.ad;
+    if (!ad) return;
+    if (ad.kind === 'scam' || ad.kind === 'game') { this.openTrap(p, ad.kind === 'scam' ? 'website' : 'game'); return; }
+    ad.tries++;
+    const cost = ad.tries * CFG.AD_TRY_COST;
+    ad.left += CFG.AD_TRY_ADD_SECS;
     this.changeDopa(-cost);
-    this.emit('adTry', { cost, add: CFG.AD_TRY_ADD_SECS });
+    this.emit('adTry', { cost });
     this.checkEnd();
   }
 
-  /** skip cost of the NEXT attempt (shown on the ad) */
   adNextCost(p: Post): number {
     return p.ad ? (p.ad.tries + 1) * CFG.AD_TRY_COST : 0;
   }
 
-  private randPos(): Pick<Website, 'x' | 'y' | 'dx' | 'dy'> {
-    return { x: 4 + this.rng() * 52, y: 28 + this.rng() * 45, dx: 4 + this.rng() * 42, dy: 30 + this.rng() * 50 };
+  adKind(p: Post): AdKind | null {
+    return p.ad && !p.ad.done ? p.ad.kind : null;
   }
 
-  private openWebsite(post: Post | null): void {
-    const s = this.s;
-    s.website = { post: post as Post, popups: CFG.WEBSITE_POPUPS, ...this.randPos() };
-    this.setPhase('website');
-    this.emit('website', s.website);
+  private placeTrap(t: Trap): void {
+    const r = this.rng;
+    t.x = 4 + r() * 60; t.y = 30 + r() * 45;
+    t.dx = 4 + r() * 42; t.dy = 30 + r() * 50;
+    const a = r() * Math.PI * 2;
+    t.vx = Math.cos(a) * CFG.GAME_TARGET_SPEED; t.vy = Math.sin(a) * CFG.GAME_TARGET_SPEED;
   }
 
-  /** real = the actual X, false = the decoy */
-  websiteTap(real: boolean): void {
-    const w = this.s.website;
-    if (!w) return;
+  private openTrap(post: Post, kind: Trap['kind']): void {
+    const t: Trap = { kind, post, hits: CFG.TRAP_HITS, x: 0, y: 0, dx: 0, dy: 0, vx: 0, vy: 0 };
+    this.placeTrap(t);
+    this.s.trap = t;
+    this.setPhase('trap');
+    this.emit('trap', t);
+  }
+
+  /** real = the actual target, false = the decoy */
+  trapTap(real: boolean): void {
+    const t = this.s.trap;
+    if (!t || this.s.paused) return;
     if (real) {
-      w.popups--;
-      if (w.popups <= 0) { this.closeWebsite(); return; }
+      t.hits--;
+      if (t.hits <= 0) { this.closeTrap(); return; }
     } else {
-      this.addDopa(-2, 'MALWARE');
-      w.popups = Math.min(8, w.popups + 1);
+      this.addDopa(this.s.dopa * (CFG.TRAP_DECOY_MULT - 1), t.kind === 'game' ? 'INSTALLED' : 'MALWARE');
+      t.hits = Math.min(8, t.hits + 1);
     }
-    Object.assign(w, this.randPos());
-    this.emit('website', w);
+    this.placeTrap(t);
+    this.emit('trap', t);
   }
 
-  private closeWebsite(): void {
+  private closeTrap(): void {
     const s = this.s;
-    const w = s.website;
-    s.website = null;
+    const t = s.trap;
+    s.trap = null;
     this.setPhase('playing');
-    this.emit('website', null);
-    if (!w?.post) return; // came from a notification: back where you were
-    if (w.post.ad) w.post.ad.done = true;
+    this.emit('trap', null);
+    if (!t) return;
+    if (t.post.ad) t.post.ad.done = true;
     s.index = this.forwardIndex();
-    this.emit('acted', { action: 'up', from: w.post, to: this.current(), result: { total: 0, steps: [] }, check: null });
+    this.emit('acted', { action: 'up', from: t.post, to: this.current(), result: { total: 0, tag: 'ESCAPED', steps: [] }, check: null });
   }
 
   /* ── notifications ── */
 
   private spawnNotif(): void {
-    const def = weightedPick(NOTIFS, (n) => n.weight ?? 10, this.rng());
+    const def = weightedPick(NOTIFS, (n) => n.weight, this.rng());
     if (!def) return;
     this.s.notif = { uid: this.s.uid++, def, left: CFG.NOTIF_SECS };
     this.emit('notif', this.s.notif);
@@ -428,51 +510,40 @@ export class Game extends Emitter<Events> {
   resolveNotif(kind: 'tap' | 'swipe' | 'wait'): void {
     const s = this.s;
     const n = s.notif;
-    if (!n || (s.phase !== 'playing' && s.phase !== 'website')) return;
+    if (!n || (s.phase !== 'playing' && s.phase !== 'trap')) return;
     s.notif = null;
     this.emit('notif', null);
-    const o = n.def[kind];
-    if (o.special === 'website') { if (s.phase === 'playing') this.openWebsite(null); return; }
-    if (o.special === 'gift') { this.gift(); return; }
-    if (o.op) {
-      let op = o.op;
-      if (op.alt) op = this.rng() < 0.5 ? { k: op.k, n: op.n } : op.alt;
-      this.addDopa(applyOp(s.dopa, op) - s.dopa, n.def.from);
-    }
+    const f = n.def[kind];
+    this.addDopa(s.dopa * (f - 1), `${n.def.name} ${kind.toUpperCase()}`);
   }
 
   /* ── saved effects ── */
-
-  gift(): void {
-    const s = this.s;
-    if (s.effects.length >= CFG.SAVE_SLOTS) { this.emit('toast', 'SLOTS FULL'); return; }
-    const mod = parseMod(GIFTS[Math.floor(this.rng() * GIFTS.length)]);
-    s.effects.push({ uid: s.uid++, mods: [mod], color: '#ffffff' });
-    this.emit('effects', undefined);
-    this.emit('toast', `GIFT ${modText(mod)}`);
-  }
 
   removeEffect(uid: number): void {
     this.s.effects = this.s.effects.filter((e) => e.uid !== uid);
     this.emit('effects', undefined);
   }
 
-  moveEffect(uid: number, d: number): void {
+  moveEffectTo(uid: number, to: number): void {
     const l = this.s.effects;
     const i = l.findIndex((e) => e.uid === uid);
-    const j = i + d;
-    if (i < 0 || j < 0 || j >= l.length) return;
-    [l[i], l[j]] = [l[j], l[i]];
+    if (i < 0) return;
+    const [e] = l.splice(i, 1);
+    l.splice(Math.max(0, Math.min(l.length, to)), 0, e);
     this.emit('effects', undefined);
   }
 
   /* ── debug ── */
 
-  debugAd(premium: boolean): void {
-    const p = this.makePost(premium ? PREMIUM_TYPE : AD_TYPE, undefined, premium ? 'premium' : 'normal');
-    this.s.feed.splice(this.s.index + 1, 0, p);
-    this.emit('toast', 'AD NEXT');
+  debugPost(name: string): void {
+    const def = POSTS.find((p) => p.name === name);
+    if (!def) return;
+    this.s.feed.splice(this.s.index + 1, 0, this.makePost(def));
+    this.emit('toast', `${name} NEXT`);
   }
   debugNotif(): void { if (!this.s.notif) this.spawnNotif(); }
+  debugHour(): void {
+    this.s.minute = (this.hour() + 1) * 60;
+    this.emit('toast', `HOUR ${this.hour()}`);
+  }
 }
-

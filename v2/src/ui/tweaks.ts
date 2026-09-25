@@ -4,7 +4,6 @@
  */
 import { CFG, configDiff, FIELDS, resetConfig, saveConfig } from '../config';
 import type { ConfigKey } from '../config';
-import { POSTS } from '../engine/data';
 import type { Game } from '../engine/game';
 import type { App } from './app';
 
@@ -27,11 +26,11 @@ export function openTweaks(g: Game, app: App): void {
     <div class="grid2">
       <button class="btn small" data-dbg="plus">+10 DOPA</button>
       <button class="btn small" data-dbg="minus">−10 DOPA</button>
+      <button class="btn small" data-dbg="ad">AD NEXT</button>
+      <button class="btn small" data-dbg="premium">PREMIUM NEXT</button>
       <button class="btn small" data-dbg="notif">NOTIF</button>
-      <button class="btn small" data-dbg="hour">NEXT HOUR</button>
+      <button class="btn small" data-dbg="gift">GIFT</button>
     </div>
-    <div class="grid3">${POSTS.map((p) => `<button class="btn small" data-post="${p.name}">${p.name}</button>`).join('')}</div>
-    <p class="dim small">TAP A POST NAME TO MAKE IT COME NEXT</p>
     ${groups.map((gr) => `<h3>${gr.toUpperCase()}</h3>${FIELDS.filter((f) => f.group === gr).map((f) => fieldHtml(f.key)).join('')}`).join('')}
     <div class="grid2">
       <button class="btn small" data-dbg="copy">COPY CONFIG</button>
@@ -63,12 +62,14 @@ export function openTweaks(g: Game, app: App): void {
       b.textContent = v ? 'ON' : 'OFF';
     }));
 
-  const playing = () => g.s.phase === 'playing' || g.s.phase === 'trap';
+  const playing = () => g.s.phase === 'playing' || g.s.phase === 'website';
   const dbg: Record<string, () => void> = {
     plus: () => playing() && g.addDopa(10, 'DEBUG'),
     minus: () => playing() && g.addDopa(-10, 'DEBUG'),
+    ad: () => playing() && g.debugAd(false),
+    premium: () => playing() && g.debugAd(true),
     notif: () => playing() && g.debugNotif(),
-    hour: () => playing() && g.debugHour(),
+    gift: () => playing() && g.gift(),
     reset: () => { resetConfig(); app.closeSheet(); openTweaks(g, app); },
     copy: () => {
       const json = JSON.stringify(configDiff(), null, 2);
@@ -78,5 +79,4 @@ export function openTweaks(g: Game, app: App): void {
     },
   };
   body.querySelectorAll<HTMLElement>('[data-dbg]').forEach((b) => b.addEventListener('click', () => dbg[b.dataset.dbg!]?.()));
-  body.querySelectorAll<HTMLElement>('[data-post]').forEach((b) => b.addEventListener('click', () => { if (playing()) g.debugPost(b.dataset.post!); }));
 }

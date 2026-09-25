@@ -1,10 +1,11 @@
 /**
  * Pixel graphics, all generated as tiny SVGs (no emoji, no image files):
  *   - icons: arrows, bookmark, kebab, X  (inherit currentColor)
- *   - frames: chunky pixel borders (CSS border + notched corners)
+ *   - frames: chunky pixel borders per post type (CSS border-image)
+ *   - art: symmetric placeholder "pictures" seeded per post
  */
-import { modValueCls, modValueText } from '../engine/ops';
-import type { Dir, Mod, SavePart } from '../types';
+import type { Dir, Mod } from '../types';
+import { fmt, makeRng } from '../util';
 
 function grid(rows: string[], cls = 'px-ico'): string {
   const h = rows.length;
@@ -42,26 +43,17 @@ export const ICON = {
   kebab: grid(['XX', 'XX', '..', '..', 'XX', 'XX', '..', '..', 'XX', 'XX']),
   x: grid(['X.....X', '.X...X.', '..X.X..', '...X...', '..X.X..', '.X...X.', 'X.....X']),
   pause: grid(['XX.XX', 'XX.XX', 'XX.XX', 'XX.XX', 'XX.XX']),
-  /** circle with a slash: the universal "block" sign */
-  block: grid(['..XXXXX..', '.X.....X.', 'X.....XXX', 'X....XX.X', 'X...XX..X', 'X..XX...X', 'X.XX....X', '.X.....X.', '..XXXXX..']),
-  /** flag: "report" */
-  report: grid(['XXXXXXX.', 'XXXXXXXX', 'XXXXXXX.', 'XXXXXX..', 'X.......', 'X.......', 'X.......', 'X.......', 'X.......']),
 };
 
-/** pixel arrows for a set of dirs, in ↑↓←→ order */
-export function dirsHtml(dirs: Dir[]): string {
-  return (['up', 'down', 'left', 'right'] as Dir[]).filter((d) => dirs.includes(d)).map(arrow).join('');
-}
-
-/** rolled saved-effect mod: "+2→", "×2↑" */
+/** "+2↑" with a pixel arrow, coloured by what it does */
 export function modHtml(m: Mod): string {
-  return `<span class="mod ${modValueCls(m.k, m.n)}">${modValueText(m.k, m.n)}${dirsHtml(m.dirs)}</span>`;
+  const cls = m.k === 'x' ? (m.n >= 1 ? 'c-mul' : 'c-div') : m.n >= 0 ? 'c-add' : 'c-sub';
+  const v = m.k === 'x' ? `×${fmt(m.n)}` : m.n < 0 ? `−${fmt(-m.n)}` : `+${fmt(m.n)}`;
+  return `<span class="mod ${cls}">${v}${m.dir === 'all' ? '<small>ALL</small>' : arrow(m.dir)}</span>`;
 }
 
-/** not-yet-rolled save part (shown on the bookmark): "×3/×−3↕↔" */
-export function savePartHtml(p: SavePart): string {
-  const vals = [...new Set(p.values)].map((v) => `<span class="${modValueCls(p.k, v)}">${modValueText(p.k, v)}</span>`).join('<span class="c-dim">/</span>');
-  return `<span class="mod">${vals}${dirsHtml(p.dirs)}</span>`;
+export function modsHtml(mods: Mod[]): string {
+  return mods.map(modHtml).join(' ');
 }
 
 /* ── frames ─────────────────────────────────────────────────────────── */
@@ -81,4 +73,18 @@ export function frameStyle(color: string, style: FrameStyle = 'solid', unit = 4,
   }
   if (style === 'double') return `${n}${bg}border:${unit * 2}px double ${color};`;
   return `${n}${bg}border:${unit}px ${style} ${color};`;
+}
+
+/* ── placeholder art ────────────────────────────────────────────────── */
+
+/** 7×7 mirrored blob, like a pixel sprite. deterministic per seed */
+export function art(seed: number, color: string): string {
+  const r = makeRng(String(seed));
+  const rows: string[] = [];
+  for (let y = 0; y < 7; y++) {
+    const half: string[] = [];
+    for (let x = 0; x < 4; x++) half.push(r() < 0.5 - Math.abs(y - 3) * 0.06 ? 'X' : '.');
+    rows.push([...half, ...half.slice(0, 3).reverse()].join(''));
+  }
+  return `<span class="art" style="color:${color}">${grid(rows, 'px-art')}</span>`;
 }

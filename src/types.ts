@@ -1,131 +1,156 @@
 /**
- * Data model. Everything the player sees is an OP on their dopa:
- *   +2  add · −2 subtract · ×2 multiply · ÷2 divide · ×2/÷2 coin flip
- * Colours follow the op: + and × are blue family, − and ÷ are red family.
+ * v3 data model. Content lives in src/data/*.json (see src/data/README.md);
+ * engine/data.ts parses it into these shapes.
+ *
+ * DOPA = your points.
+ *   swipes      ± points (post base stats, modified by saved effects)
+ *   save        adds a persistent effect on future swipes. no points, you stay
+ *   report/block  one-time multiplier on your CURRENT dopa, post is removed
+ *   notifications multiplier on current dopa (tap / swipe / wait)
  */
 
 export type Dir = 'up' | 'down' | 'left' | 'right';
 export const DIRS: Dir[] = ['up', 'down', 'left', 'right'];
 
-/** every action the player can take on a post */
 export type Action = Dir | 'save' | 'block' | 'report';
 
-export type OpKind = '+' | '-' | 'x' | '/';
+export type PostKind = 'good' | 'bad' | 'ad' | 'special';
+export type AdKind = 'real' | 'scam' | 'game';
 
-export interface Op {
-  k: OpKind;
-  n: number;
-  /** coin flip: 50% this op, 50% `alt` */
-  alt?: Op;
+/** a number in the data: fixed, rolled when the post appears, or rolled when used */
+export type ValSpec = { fixed: number } | { rand: [number, number] } | { pick: number[] };
+
+/** one part of a save effect before it's rolled ("↕↔*pick(3,3,-3)") */
+export interface SavePart {
+  dirs: Dir[];
+  k: '+' | 'x';
+  /** one value = fixed. several = picked at random when you save */
+  values: number[];
 }
 
-/** a saved-effect modifier: changes the dopa gained by a matching swipe */
+/** a rolled, active saved-effect modifier */
 export interface Mod {
-  dir: Dir | 'all';
-  /** '+' adds to the gain (n can be negative), 'x' multiplies the gain */
+  dirs: Dir[];
   k: '+' | 'x';
   n: number;
 }
 
-export interface PostType {
-  id: string;
-  /** short name shown on the post */
+export interface PostDef {
   name: string;
-  /** border colour. avoid red/blue: those belong to the numbers */
-  color: string;
+  kind: PostKind;
   weight: number;
-  /** compact templates, see content/posts.ts */
-  templates: string[];
-  /** CSS border style */
-  border?: 'solid' | 'dashed' | 'double' | 'rainbow';
+  minHour: number;
+  stats: Record<Dir, ValSpec>;
+  /** save parts with rand() already allowed; resolved per post */
+  save: { dirs: Dir[]; k: '+' | 'x'; value: ValSpec }[] | null;
+  report: number;
+  block: number;
+  ad?: AdKind;
+  special?: 'captcha' | 'glitch';
+}
+
+export type StatTransform = { set: number } | { mul: number };
+
+export interface ModifierDef {
+  name: string;
+  group: 'mult' | 'variant';
+  minHour: number;
+  weight: number;
+  appliesTo?: PostKind;
+  stats: Partial<Record<Dir, StatTransform>>;
+  /** scale factor for the save effect (see scaleSave) */
+  save?: number;
+  report?: number;
+  block?: number;
+}
+
+export interface NotifDef {
+  name: string;
+  weight: number;
+  tap: number;
+  swipe: number;
+  wait: number;
 }
 
 export interface AdState {
-  premium: boolean;
+  kind: AdKind;
   /** real seconds left */
   left: number;
   tries: number;
   done: boolean;
 }
 
+export interface CaptchaState {
+  /** tile labels in screen order */
+  tiles: number[];
+  /** next label to tap (1-based) */
+  next: number;
+}
+
 export interface Post {
   uid: number;
-  type: PostType;
-  handle: string;
-  /** seed for the placeholder pixel picture */
-  art: number;
-  acts: Record<Dir, Op>;
-  save: Mod[] | null;
-  block: Op;
-  report: Op;
+  /** display name incl. modifiers: CUTE.SLOP.x3 */
+  name: string;
+  def: PostDef;
+  stats: Record<Dir, number>;
+  save: SavePart[] | null;
+  report: number;
+  block: number;
   ad: AdState | null;
-  /** liked or disliked (← / → are once per post) */
+  captcha: CaptchaState | null;
   reacted: '' | 'liked' | 'disliked';
   saved: boolean;
   blocked: boolean;
-  /** times you left this post with ↑ / ↓ (repeat decay) */
   leaves: { up: number; down: number };
 }
 
 export interface Effect {
   uid: number;
   mods: Mod[];
-  /** type colour of the post it came from */
-  color: string;
+  /** name of the post it came from */
+  from: string;
 }
 
 export interface TallyStep {
-  /** short text: "+1", "+2↑", "×0.9" */
   text: string;
-  /** colour class */
   cls: string;
-  /** running gain after this step */
+  /** running value after this step */
   after: number;
-  /** chip to flash */
   effect?: number;
+  /** the saved-effect mod that produced this step (UI draws pixel arrows) */
+  mod?: Mod;
 }
 
 export interface Result {
-  /** change to dopa */
   total: number;
   steps: TallyStep[];
+  /** short word shown in the tally for special outcomes (SAME, FLIP, SAVED…) */
+  tag?: string;
 }
 
-export type ModeId = 'upkeep' | 'quota' | 'clock';
-export type Phase = 'menu' | 'playing' | 'website' | 'over' | 'won';
-
-export interface OutcomeDef {
-  op?: Op;
-  /** special outcomes */
-  special?: 'website' | 'gift';
-}
-
-export interface NotifDef {
-  id: string;
-  from: string;
-  tap: OutcomeDef;
-  swipe: OutcomeDef;
-  wait: OutcomeDef;
-  weight?: number;
-}
+export type ModeId = 'clock' | 'upkeep' | 'quota';
+export type Phase = 'menu' | 'playing' | 'trap' | 'over' | 'won';
 
 export interface Notif {
   uid: number;
   def: NotifDef;
-  /** real seconds left */
   left: number;
 }
 
-export interface Website {
+/** scam website or playable ad: tap the real target N times to get out */
+export interface Trap {
+  kind: 'website' | 'game';
   post: Post;
-  popups: number;
+  hits: number;
   x: number;
   y: number;
+  /** playable-ad target velocity (% per second) */
+  vx: number;
+  vy: number;
   dx: number;
   dy: number;
 }
 
-/** what happened at an UPKEEP / QUOTA checkpoint */
 export interface Check {
   kind: 'upkeep' | 'quota';
   amount: number;
@@ -138,18 +163,15 @@ export interface GameState {
   phase: Phase;
   paused: boolean;
   dopa: number;
-  /** fake minutes since 00:00 */
   minute: number;
   turn: number;
-  /** checkpoints passed (upkeep / quota level) */
   level: number;
   feed: Post[];
   index: number;
   effects: Effect[];
   notif: Notif | null;
-  website: Website | null;
-  postsSinceAd: number;
+  trap: Trap | null;
   uid: number;
-  stats: { actions: number; liked: number; disliked: number; saved: number; blocked: number; ads: number; peak: number };
+  stats: { moves: number; liked: number; disliked: number; saved: number; blocked: number; reported: number; peak: number };
   deathMsg: string;
 }

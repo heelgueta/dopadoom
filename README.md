@@ -1,86 +1,71 @@
 # DOPADOOM
 
-Stay awake until 08:00 by scrolling the feed.
-**v2: mechanics only.** Theme and satire come later.
+Stay awake until 08:00 by scrolling the feed. **v3.**
 
 **Play:** https://heelgueta.github.io/dopadoom/
-**Pilot 1** (the first, feature-heavy prototype): https://heelgueta.github.io/dopadoom/pilot1/. Its source is in `pilot1/` and it's also git tag `pilot1`.
+Old versions (also linked from the main menu): [pilot 1](https://heelgueta.github.io/dopadoom/pilot1/) · [v2](https://heelgueta.github.io/dopadoom/v2/). Their code is in `pilot1/` and `v2/`, and they're git tags `pilot1` and `v2`.
 
 ## Rules
 
-Every number is an **op on your dopa**: `+2` add, `−2` subtract, `×2` multiply, `÷2` divide, `×2/÷2` coin flip.
-Colours: **blue + / cyan ×** are good, **red − / pink ÷** are bad.
+**DOPA** = your points. Posts show only numbers: what each swipe adds, and what saving gives.
 
-| input | does |
-|---|---|
-| swipe ↑ | skip to the next post |
-| swipe ↓ | go back (not to blocked posts) |
-| swipe ← | dislike (once per post) |
-| swipe → | like (once per post) |
-| bookmark button | **save**: take the post's effect *instead of* swiping it |
-| ⋮ button | block / report (removes the post; report pays off on FAKE NEWS) |
+| input | does | then |
+|---|---|---|
+| swipe ↑ skip / ↓ back | ± the post's number (↓ goes to the previous non-blocked post) | move |
+| swipe ← dislike / → like | ± the post's number | move |
+| same reaction again | +0 | move |
+| opposite reaction | dopa × 0.9 | move |
+| bookmark: SAVE | adds the post's effect to your chips. **no points** | **stay** |
+| ⋮ BLOCK / REPORT | one-time multiplier on your current dopa (good or bad, not shown) | post disappears, move |
 
-- **Saved effects** (5 slots) modify swipe gains, applied **left → right**, so order matters. Tap a chip to move or delete it.
-- Repeating ↑/↓ on the same post decays: ×1, ×0.9, ×0.8 …
-- **Tally:** after every move the result is added up in the middle of the screen, and you can't move until it's done.
-- **Ads** can't be skipped. Each try costs more dopa and adds time. Trying to skip a **premium ad** traps you on a scam website.
-- **Notifications** show all three outcomes up front: `TAP +2  SWIPE −1  WAIT −2`.
+- Saved chips modify swipe points **left → right**. **Tap** a chip to arm it and tap again to delete; **hold** to drag it into a new position. Neither pauses the game.
+- **Modifiers** get appended to names: `.x2` … `.x8` (one more unlocks every hour; multiply the numbers and the save), `.SLOP` (good posts, reversed), `.REAC` (bad posts, amplified).
+- **Ads** can't be skipped while the timer runs. Trying: REALAD costs more each time and adds seconds, SCAMAD opens the scam website, GAMEAD opens a playable ad. Tap the real target to get out. DOPA stays visible and keeps draining.
+- **CAPTCH**: tap 1 → 6 in order.
+- **Notifications**: TAP / SWIPE / WAIT each multiply your dopa. What each does isn't shown; you learn the names.
+- **Tolerance:** the bigger your bank, the faster it leaks. Multipliers feel huge but can't be hoarded.
 - You fall asleep at −10.
 
-## Modes (pick on the start screen)
+## Modes
 
-| mode | how the night hurts |
+| mode | pressure |
 |---|---|
-| **UPKEEP** | every 12 moves you **pay** dopa (10, 16, 26 … ×1.6 each time) |
-| **QUOTA** | every 12 moves you must **have** dopa (15, 28, 51 … ×1.85). Not spent |
-| **CLOCK** | real-time drain that grows each hour, plus a 1%/s leak on your bank |
+| **CLOCK** | real-time drain (0.25/s, growing hourly) + 10%/s tolerance |
+| **UPKEEP** | every 12 moves you pay dopa (×1.6 each time) + 15%/move tolerance |
+| **QUOTA** | every 12 moves you must have dopa (×2.1 each time) + 15%/move tolerance |
 
-UPKEEP and QUOTA are turn based: each move is 5 fake minutes, so 96 moves reach 08:00.
+Bot simulations (10 runs each; a "smart" bot plays like someone who has learned which names are good and bad):
 
-Bot simulations of the current numbers (12 runs each):
-
-| mode | only swipes up | greedy (takes best visible number) |
+| mode | only swipes up | smart |
 |---|---|---|
-| upkeep | asleep 05:00–07:00 | wins ~67% |
-| quota | asleep 05:00–06:00 | wins ~40% |
-| clock (1 move per 2.5s) | asleep 02:30–04:30 | wins ~40% |
+| clock (1 move / 3.5s) | asleep 01:30–04:00 | wins 6/10 |
+| upkeep (1 move / 2.5s) | asleep 02:00–03:00 | wins 6/10 |
+| quota (1 move / 2.5s) | asleep 01:00–02:00 | wins 7/10 |
+
+## Editing content
+
+All game content is JSON in **`src/data/`**. See [`src/data/README.md`](src/data/README.md) for the notation.
+
+```json
+"CUTE": { "kind": "good", "weight": 12, "up": 1, "down": 0, "left": -1, "right": 1, "save": "→+2", "report": 0.8, "block": 0.8 }
+".SLOP": { "group": "variant", "appliesTo": "good", "up": "=2", "left": "*-4", "save": "*-1", "report": 0.8, "block": 1.5 }
+"FREN": { "tap": 1.1, "swipe": 0.9, "wait": 0.9 }
+```
 
 ## Tuning
 
-Pause → **TWEAKS**: every number in `src/config.ts` is a slider. Changes are live and saved on the device. There are also debug buttons (+dopa, ad next, premium next, notification, gift).
-**COPY CONFIG** gives you JSON to paste into `DEFAULTS` in `src/config.ts`.
+Pause → **TWEAKS**. Everything in `src/config.ts` is live and saved on the device. Useful switches:
+- `COLOR_OPS` colours the numbers by op.
+- `SHOW_HIDDEN` shows the report/block/notification multipliers (for testing).
 
-## Content
-
-Post types are placeholders written in the same notation you see in game (`src/content/posts.ts`):
-
-```
-'u+1 d+1 lx2 r+1 | +2u'     →  ↑+1  ↓+1  ←×2  →+1   save: +2 per ↑
-B = block value, R = report value, ?x2,/2 = coin flip, a = all swipes
-```
-
-Notifications: `src/content/notifs.ts`, e.g. `n('mom', 'MOM', '+2', '-1', '-2')` = tap / swipe / wait.
+The debug buttons can make any post come next. **COPY CONFIG** gives JSON to paste into `DEFAULTS`.
 
 ## Dev
 
 ```bash
 npm install
 npm run dev      # http://localhost:5173 (+ LAN)
-npm run build    # typecheck + build v2 + build pilot1 into dist/pilot1
+npm run build    # v3 + pilot1 + v2 → dist/
 ```
 
 Pushing to `main` deploys to GitHub Pages.
-
-```
-src/
-  config.ts          all tunables + tweak panel metadata
-  types.ts           data model
-  engine/ops.ts      ops, mods, template parser
-  engine/game.ts     rules, modes, scoring pipeline, ads, website, notifications (no DOM)
-  content/           post types, notifications
-  ui/app.ts          HUD, tally, overlays, sheets
-  ui/postView.ts     post rendering
-  ui/pixel.ts        pixel icons / frames / placeholder art (generated SVG, no emoji)
-  ui/gestures.ts     swipe recogniser (from pilot1)
-pilot1/              frozen first prototype
-```

@@ -1,26 +1,21 @@
 /**
- * APP v3 — all DOM. Listens to Game events, forwards input.
+ * APP — all DOM. Listens to Game events, forwards input.
  *
- * PACING: after a move the post flies away and a TALLY adds up the result in
- * the middle (base → each saved effect → decay → total). Input is locked
- * until it finishes. SAVE doesn't move you, so it only flashes.
- *
- * Traps (scam website, playable ad) and the captcha live INSIDE the stage,
- * so the HUD (dopa + clock) stays visible and keeps draining.
- *
- * Saved chips: TAP = arm delete (tap again to delete) · HOLD = drag to reorder.
- * Neither pauses the game.
+ * PACING: after every action the post flies away and a TALLY plays in the
+ * middle of the screen (op → each saved effect → decay → total). Input is
+ * locked until it finishes, so you actually see what your choice did.
+ * Tunable: FEEDBACK, TALLY_STEP_MS, TALLY_HOLD_MS, CHECK_HOLD_MS.
  */
 import { CFG } from '../config';
 import type { ActEvent, Game } from '../engine/game';
 import { loadRecords, MODES } from '../engine/game';
-import { multText, signCls, signedText } from '../engine/ops';
-import type { Action, Dir, ModeId } from '../types';
+import { opHtml, signCls, signedText } from '../engine/ops';
+import type { Action, Dir, ModeId, OutcomeDef } from '../types';
 import { clamp, clock, fmt } from '../util';
 import { buzz, sfx, unlockAudio } from './audio';
 import { byId, esc, h, setText } from './dom';
 import { Gestures } from './gestures';
-import { arrow, frameStyle, ICON, modHtml } from './pixel';
+import { arrow, frameStyle, ICON, modsHtml } from './pixel';
 import { kebabMenuHtml, renderPost, setStamp, updatePost } from './postView';
 import { openTweaks } from './tweaks';
 
@@ -31,20 +26,14 @@ const OUT: Record<Action, Keyframe> = {
   down: { transform: 'translate(0,115%)' },
   left: { transform: 'translate(-140%,4%) rotate(-18deg)' },
   right: { transform: 'translate(140%,4%) rotate(18deg)' },
-  save: { transform: 'none' },
+  save: { transform: 'translate(0,-60%) scale(.15)', opacity: 0 },
   block: { transform: 'translate(0,30%) scale(.85)', opacity: 0 },
   report: { transform: 'translate(0,30%) scale(.85)', opacity: 0 },
 };
 const IN: Record<Action, string> = {
   up: 'translate(0,100%)', down: 'translate(0,-100%)', left: 'scale(.9)', right: 'scale(.9)',
-  save: 'none', block: 'scale(.9)', report: 'scale(.9)',
+  save: 'scale(.9)', block: 'scale(.9)', report: 'scale(.9)',
 };
-
-/** old versions, reachable from the menu */
-const OLD_VERSIONS = [
-  { name: 'PILOT 1', href: './pilot1/' },
-  { name: 'V2', href: './v2/' },
-];
 
 export class App {
   private stage!: HTMLElement;
@@ -54,11 +43,10 @@ export class App {
   private timers: number[] = [];
   private pauseReasons = new Set<string>();
   private shownDopa = 0;
+  /** while the tally plays, the HUD shows this instead of the real dopa */
   private hudHold: number | null = null;
   private refreshT = 0;
   private dragDir: Dir | null = null;
-  /** chip armed for deletion (tap again to delete) */
-  private armed: number | null = null;
 
   constructor(private g: Game, private root: HTMLElement) {
     this.build();
@@ -82,10 +70,10 @@ export class App {
       <main id="stage">
         <div id="tally"><div class="t-small"></div><div class="t-big"></div></div>
         <div id="notif"></div>
-        <div id="trap"></div>
       </main>
       <div id="floats"></div>
       <div id="toast"></div>
+      <div id="website"></div>
       <div id="overlay"></div>
       <div id="sheet"></div>
       <div id="crt"></div>
@@ -97,7 +85,7 @@ export class App {
   private wire(): void {
     const g = this.g;
     this.gestures = new Gestures(this.stage, {
-      onStart: () => { unlockAudio(); this.closeMenu(); this.disarm(); },
+      onStart: () => { unlockAudio(); this.closeMenu(); },
       onMove: (dx, dy, dir) => this.drag(dx, dy, dir),
       onEnd: (dir) => this.release(dir),
     });
@@ -109,21 +97,15 @@ export class App {
     g.on('toast', (t) => this.toast(t));
     g.on('effects', () => { this.renderChips(); this.refresh(); });
     g.on('notif', () => this.renderNotif());
-    g.on('trap', () => this.renderTrap());
+    g.on('website', () => this.renderWebsite());
     g.on('phase', () => this.renderOverlay());
-    g.on('refresh', () => { this.refresh(); sfx.click(); });
+    g.on('adDone', () => { sfx.adDone(); this.refresh(); });
 
     byId('pausebtn').addEventListener('click', () => { unlockAudio(); this.openPause(); });
-    this.wireChips();
-
-    // captcha tiles live inside the post
-    this.stage.addEventListener('pointerdown', (e) => {
-      const tile = (e.target as HTMLElement).closest<HTMLElement>('.tile');
-      if (!tile) return;
-      e.stopPropagation();
-      unlockAudio();
-      this.g.captchaTap(Number(tile.dataset.tile));
-    }, true);
+    byId('chips').addEventListener('click', (e) => {
+      const chip = (e.target as HTMLElement).closest<HTMLElement>('.chip[data-uid]');
+      if (chip) this.openChip(Number(chip.dataset.uid));
+    });
 
     window.addEventListener('keydown', (e) => {
       const map: Record<string, Action> = {
@@ -134,14 +116,13 @@ export class App {
       if (a && !e.repeat) { e.preventDefault(); unlockAudio(); this.doAct(a); }
     });
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && (this.g.s.phase === 'playing' || this.g.s.phase === 'trap')) this.openPause();
+      if (document.hidden && this.g.s.phase === 'playing') this.openPause();
     });
     document.addEventListener('touchmove', (e) => { if (!(e.target as HTMLElement).closest('.scroll')) e.preventDefault(); }, { passive: false });
   }
 
   applyCfgClasses(): void {
     this.root.classList.toggle('crt', CFG.CRT);
-    this.root.classList.toggle('colors', CFG.COLOR_OPS);
   }
 
   private setPaused(reason: string, on: boolean): void {
@@ -153,12 +134,13 @@ export class App {
 
   frame(dt: number): void {
     const s = this.g.s;
+    // HUD dopa counts toward its target (Balatro-ish tick-up)
     const target = this.hudHold ?? s.dopa;
     this.shownDopa += (target - this.shownDopa) * Math.min(1, dt * 12);
     if (Math.abs(target - this.shownDopa) < 0.05) this.shownDopa = target;
     const d = byId('dopa');
     setText(d, fmt(this.shownDopa));
-    d.className = this.shownDopa < 0 ? 'neg' : '';
+    d.className = this.shownDopa < 0 ? 'c-sub neg' : '';
     setText(byId('clock'), clock(s.minute));
     this.renderStatus();
 
@@ -168,14 +150,9 @@ export class App {
       const bar = document.querySelector<HTMLElement>('#notif .nbar');
       if (bar) bar.style.width = `${clamp(s.notif.left / CFG.NOTIF_SECS, 0, 1) * 100}%`;
     }
-    // playable-ad target moves every frame
-    const t = s.trap;
-    if (t?.kind === 'game') {
-      const tgt = document.querySelector<HTMLElement>('#trap .target');
-      if (tgt) { tgt.style.left = `${t.x}%`; tgt.style.top = `${t.y}%`; }
-    }
+    // drowsy: the screen darkens as you approach sleep
     const drowsy = clamp((3 - s.dopa) / (3 - CFG.SLEEP_AT), 0, 1);
-    this.stage.style.filter = drowsy > 0 ? `brightness(${1 - drowsy * 0.6})` : '';
+    this.stage.style.filter = drowsy > 0 ? `brightness(${1 - drowsy * 0.6}) saturate(${1 - drowsy * 0.7})` : '';
   }
 
   private renderStatus(): void {
@@ -183,9 +160,9 @@ export class App {
     const st = byId('status');
     const nc = g.nextCheck();
     let html: string;
-    if (nc?.kind === 'upkeep') html = `PAY ${nc.amount} IN ${nc.in}`;
-    else if (nc?.kind === 'quota') html = `NEED ${nc.amount} IN ${nc.in}`;
-    else html = `−${g.drainRate().toFixed(2)}/S`;
+    if (nc?.kind === 'upkeep') html = `PAY <span class="c-sub">${nc.amount}</span> IN ${nc.in}`;
+    else if (nc?.kind === 'quota') html = `NEED <span class="${g.s.dopa >= nc.amount ? 'c-add' : 'c-sub'}">${nc.amount}</span> IN ${nc.in}`;
+    else html = `<span class="c-sub">−${g.drainRate().toFixed(2)}/S</span>`;
     if (st.dataset.h !== html) { st.innerHTML = html; st.dataset.h = html; }
   }
 
@@ -217,10 +194,10 @@ export class App {
     const el = this.postEl;
     if (!el || this.busy) return;
     const p = this.g.current();
-    if (p.captcha || (p.ad && !p.ad.done)) { this.doAct('block'); return; } // denied / counts as a skip try
+    if (p.ad && !p.ad.done) { this.doAct('block'); return; } // counts as an ad skip attempt
     const menu = el.querySelector<HTMLElement>('.menu')!;
     if (menu.classList.contains('show')) { this.closeMenu(); return; }
-    menu.innerHTML = kebabMenuHtml(p);
+    menu.innerHTML = kebabMenuHtml(this.g, p);
     menu.setAttribute('style', frameStyle('#ffffff', 'solid', 3, 0));
     menu.classList.add('show');
     menu.querySelectorAll<HTMLElement>('[data-act]').forEach((b) => {
@@ -245,8 +222,7 @@ export class App {
     if (!el || !dir || this.busy || s.phase !== 'playing' || s.paused) return;
     if (dir !== this.dragDir) {
       this.dragDir = dir;
-      const p = this.g.current();
-      el.dataset.blocked = this.g.blockReason(p, dir) ? '1' : '';
+      el.dataset.blocked = this.g.blockReason(this.g.current(), dir) ? '1' : '';
     }
     const f = el.dataset.blocked ? 0.3 : 1;
     el.style.transform = dy ? `translate(0,${dy * f}px)` : `translate(${dx * f}px,0) rotate(${(dx * f) / 20}deg)`;
@@ -281,7 +257,7 @@ export class App {
     if (CFG.BAD_MOVE_PENALTY) this.float(-CFG.BAD_MOVE_PENALTY, reason);
   }
 
-  /* ── tally ────────────────────────────────────────────────────────── */
+  /* ── the tally (feedback between posts) ───────────────────────────── */
 
   private later(ms: number, fn: () => void): void {
     this.timers.push(window.setTimeout(fn, ms));
@@ -296,22 +272,9 @@ export class App {
     this.gestures.cancel();
     this.closeMenu();
     const s = this.g.s;
-    const r = e.result;
-
-    // SAVE: you stay on the post. quick flash, no tally lock
-    if (e.from === e.to) {
-      if (this.postEl) this.snapBack(this.postEl);
-      this.refresh();
-      sfx.save();
-      buzz(15);
-      this.toast(r.tag ?? '');
-      const chips = byId('chips').querySelectorAll<HTMLElement>('.chip:not(.empty)');
-      chips[chips.length - 1]?.animate([{ transform: 'scale(1.4)' }, { transform: 'scale(1)' }], { duration: 250, easing: EASE });
-      if (e.check) this.showCheck(e);
-      return;
-    }
-
     this.busy = true;
+
+    // fly the old post away
     const old = this.postEl;
     if (old) {
       old.classList.add('leaving');
@@ -319,13 +282,14 @@ export class App {
       old.animate([{ transform: from }, OUT[e.action]], { duration: CFG.ANIM_MS, easing: EASE, fill: 'forwards' }).onfinish = () => old.remove();
       this.postEl = null;
     }
-    if (e.action === 'block' || e.action === 'report') sfx.reject(); else sfx.swipe();
+    if (e.action === 'save') sfx.save(); else if (e.action === 'block' || e.action === 'report') sfx.reject(); else sfx.swipe();
 
+    const r = e.result;
     const checkDelta = e.check?.kind === 'upkeep' ? -e.check.amount : 0;
     const pre = s.dopa - r.total - checkDelta;
     const next = () => { this.hudHold = null; this.mountPost(e.action); this.busy = false; };
 
-    if (!CFG.FEEDBACK || (!r.steps.length && !r.tag)) {
+    if (!CFG.FEEDBACK || !r.steps.length) {
       if (r.total) this.float(r.total, '');
       if (e.check) this.showCheck(e);
       this.later(CFG.ANIM_MS * 0.6, next);
@@ -338,11 +302,10 @@ export class App {
     const small = T.querySelector<HTMLElement>('.t-small')!;
     T.className = 'show';
     const step = CFG.TALLY_STEP_MS;
-    const steps = r.steps.length ? r.steps : [{ text: '', cls: 'c-dim', after: 0 }];
 
-    steps.forEach((st, i) => {
+    r.steps.forEach((st, i) => {
       this.later(i * step, () => {
-        small.innerHTML = st.mod ? modHtml(st.mod) : `<span class="${st.cls}">${esc(st.text || r.tag || '')}</span>`;
+        small.innerHTML = `<span class="${st.cls}">${esc(st.text)}</span>`;
         big.innerHTML = `<span class="${signCls(st.after)}">${signedText(st.after)}</span>`;
         big.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 140 });
         if (st.effect !== undefined) {
@@ -353,9 +316,9 @@ export class App {
       });
     });
 
-    const tEnd = steps.length * step;
+    const tEnd = r.steps.length * step;
     this.later(tEnd, () => {
-      small.innerHTML = r.tag ? esc(r.tag) : '';
+      small.innerHTML = '';
       big.innerHTML = `<span class="${signCls(r.total)}">${signedText(r.total)}</span>`;
       big.animate([{ transform: 'scale(1.6)' }, { transform: 'scale(1)' }], { duration: 200, easing: EASE });
       this.hudHold = pre + r.total;
@@ -382,128 +345,43 @@ export class App {
       small.textContent = 'UPKEEP';
       big.innerHTML = `<span class="c-sub">−${c.amount}</span>`;
     } else {
-      small.textContent = c.ok ? 'QUOTA OK' : 'QUOTA FAILED';
-      big.textContent = String(c.amount);
+      small.innerHTML = c.ok ? '<span class="c-add">QUOTA OK</span>' : '<span class="c-sub">QUOTA FAILED</span>';
+      big.innerHTML = `<span class="${c.ok ? 'c-add' : 'c-sub'}">${c.amount}</span>`;
     }
     big.animate([{ transform: 'scale(1.8)' }, { transform: 'scale(1)' }], { duration: 260, easing: EASE });
     this.hudHold = null;
-    if (c.ok) sfx.hour(); else sfx.sleep();
-    if (e.from === e.to) this.later(CFG.CHECK_HOLD_MS, () => { T.className = ''; });
+    c.ok ? sfx.hour() : sfx.sleep();
   }
 
-  /* ── saved chips: tap = arm delete, hold = drag ───────────────────── */
+  /* ── HUD chips (saved effects) ────────────────────────────────────── */
 
   private renderChips(): void {
     const s = this.g.s;
-    if (this.armed !== null && !s.effects.some((e) => e.uid === this.armed)) this.armed = null;
     const parts: string[] = [];
-    s.effects.forEach((e) => {
-      const armed = this.armed === e.uid;
-      parts.push(`<div class="chip${armed ? ' armed' : ''}" data-uid="${e.uid}" style="${frameStyle(armed ? '#ff4040' : '#ffffff', 'solid', 2, armed ? 0.3 : 0.06)}">${armed ? `${ICON.x}<small>DELETE</small>` : e.mods.map(modHtml).join('')}</div>`);
-    });
+    s.effects.forEach((e) => parts.push(`<button class="chip" data-uid="${e.uid}" style="${frameStyle(e.color, 'solid', 2, 0.1)}">${modsHtml(e.mods)}</button>`));
     for (let i = s.effects.length; i < CFG.SAVE_SLOTS; i++) parts.push(`<div class="chip empty" style="${frameStyle('#444444', 'dashed', 2, 0)}"></div>`);
     const html = parts.join('');
     const wrap = byId('chips');
-    wrap.style.gridTemplateColumns = `repeat(${CFG.SAVE_SLOTS}, 1fr)`;
     if (wrap.dataset.h !== html) { wrap.innerHTML = html; wrap.dataset.h = html; }
   }
 
-  private disarm(): void {
-    if (this.armed !== null) { this.armed = null; this.renderChips(); }
-  }
-
-  private wireChips(): void {
-    const wrap = byId('chips');
-    let uid: number | null = null;
-    let pid = -1;
-    let x0 = 0;
-    let y0 = 0;
-    let holdT = 0;
-    let dragging = false;
-    let ghost: HTMLElement | null = null;
-
-    const slotAt = (x: number): number => {
-      const chips = [...wrap.children] as HTMLElement[];
-      const n = this.g.s.effects.length;
-      for (let i = 0; i < n; i++) {
-        const r = chips[i].getBoundingClientRect();
-        if (x < r.left + r.width / 2) return i;
-      }
-      return n - 1;
-    };
-
-    wrap.addEventListener('pointerdown', (e) => {
-      const chip = (e.target as HTMLElement).closest<HTMLElement>('.chip[data-uid]');
-      if (!chip) { this.disarm(); return; }
-      unlockAudio();
-      uid = Number(chip.dataset.uid);
-      pid = e.pointerId;
-      x0 = e.clientX; y0 = e.clientY;
-      dragging = false;
-      wrap.setPointerCapture(e.pointerId);
-      clearTimeout(holdT);
-      holdT = window.setTimeout(() => {
-        // long press → pick it up
-        dragging = true;
-        this.armed = null;
-        this.renderChips();
-        const src = wrap.querySelector<HTMLElement>(`.chip[data-uid="${uid}"]`);
-        if (!src) return;
-        const r = src.getBoundingClientRect();
-        ghost = src.cloneNode(true) as HTMLElement;
-        ghost.classList.add('ghost');
-        ghost.style.width = `${r.width}px`;
-        ghost.style.height = `${r.height}px`;
-        ghost.style.left = `${r.left}px`;
-        ghost.style.top = `${r.top}px`;
-        document.body.appendChild(ghost);
-        src.classList.add('lifted');
-        buzz(20);
-        sfx.click();
-      }, CFG.CHIP_HOLD_MS);
-    });
-
-    wrap.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== pid) return;
-      if (!dragging) {
-        if (Math.hypot(e.clientX - x0, e.clientY - y0) > 10) clearTimeout(holdT);
-        return;
-      }
-      if (ghost) ghost.style.transform = `translate(${e.clientX - x0}px, ${Math.max(-20, Math.min(40, e.clientY - y0))}px) scale(1.1)`;
-      const to = slotAt(e.clientX);
-      const from = this.g.s.effects.findIndex((x) => x.uid === uid);
-      if (uid !== null && to !== from) {
-        this.g.moveEffectTo(uid, to); // re-renders chips; keep the lifted look on the moved chip
-        wrap.querySelector(`.chip[data-uid="${uid}"]`)?.classList.add('lifted');
-        sfx.chip(to);
-      }
-    });
-
-    const end = (e: PointerEvent) => {
-      if (e.pointerId !== pid) return;
-      clearTimeout(holdT);
-      pid = -1;
-      if (ghost) { ghost.remove(); ghost = null; }
-      if (dragging) {
-        dragging = false;
-        this.renderChips();
-        wrap.querySelectorAll('.lifted').forEach((c) => c.classList.remove('lifted'));
-        return;
-      }
-      if (uid === null || Math.hypot(e.clientX - x0, e.clientY - y0) > 10) return;
-      // tap: arm, tap again: delete
-      if (this.armed === uid) {
-        this.g.removeEffect(uid);
-        this.armed = null;
-        sfx.reject();
-      } else {
-        this.armed = uid;
-        sfx.click();
-      }
-      this.renderChips();
-    };
-    wrap.addEventListener('pointerup', end);
-    wrap.addEventListener('pointercancel', end);
+  private openChip(uid: number): void {
+    const g = this.g;
+    const i = g.s.effects.findIndex((e) => e.uid === uid);
+    const e = g.s.effects[i];
+    if (!e) return;
+    const body = this.openSheet(`
+      <div class="chip-big" style="${frameStyle(e.color, 'solid', 4, 0.1)}">${modsHtml(e.mods)}</div>
+      <p class="dim">SLOT ${i + 1}/${CFG.SAVE_SLOTS} · APPLIES LEFT ${arrow('right')} RIGHT</p>
+      <div class="row">
+        <button class="btn" data-mv="-1" ${i === 0 ? 'disabled' : ''}>${arrow('left')}</button>
+        <button class="btn" data-mv="1" ${i === g.s.effects.length - 1 ? 'disabled' : ''}>${arrow('right')}</button>
+      </div>
+      <button class="btn red" data-del>DELETE</button>
+      <button class="btn" data-close>CLOSE</button>`);
+    body.querySelectorAll<HTMLElement>('[data-mv]').forEach((b) =>
+      b.addEventListener('click', () => { g.moveEffect(uid, Number(b.dataset.mv)); sfx.click(); this.openChip(uid); }));
+    body.querySelector('[data-del]')?.addEventListener('click', () => { g.removeEffect(uid); sfx.reject(); this.closeSheet(); });
   }
 
   /* ── floats / toast ───────────────────────────────────────────────── */
@@ -512,18 +390,23 @@ export class App {
     const el = h('div', `float ${signCls(amount)}`, `${signedText(amount)}${label ? ` <small>${esc(label)}</small>` : ''}`);
     el.style.left = `${16 + Math.random() * 40}px`;
     byId('floats').appendChild(el);
-    el.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(-40px)', opacity: 0 }], { duration: 1200, easing: 'ease-out' }).onfinish = () => el.remove();
+    el.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(-40px)', opacity: 0 }], { duration: 1000, easing: 'ease-out' }).onfinish = () => el.remove();
   }
 
   toast(msg: string): void {
-    if (!msg) return;
     const t = byId('toast');
     t.textContent = msg;
     t.className = 'show';
-    this.later(1200, () => { t.className = ''; });
+    this.later(1400, () => { t.className = ''; });
   }
 
   /* ── notifications ────────────────────────────────────────────────── */
+
+  private outcomeHtml(o: OutcomeDef): string {
+    if (o.special === 'website') return '<span class="c-sub">WEB</span>';
+    if (o.special === 'gift') return '<span class="c-add">GIFT</span>';
+    return o.op ? opHtml(o.op) : '';
+  }
 
   private renderNotif(): void {
     const wrap = byId('notif');
@@ -531,10 +414,13 @@ export class App {
     wrap.innerHTML = '';
     if (!n) return;
     sfx.notif();
-    const val = (f: number) => (CFG.SHOW_HIDDEN ? ` <span class="hid">${multText(f)}</span>` : '');
     const el = h('div', 'nb', `
-      <div class="nfrom">${esc(n.def.name)}</div>
-      <div class="nouts"><span>TAP${val(n.def.tap)}</span><span>SWIPE${val(n.def.swipe)}</span><span>WAIT${val(n.def.wait)}</span></div>
+      <div class="nfrom">${esc(n.def.from)}</div>
+      <div class="nouts">
+        <span>TAP ${this.outcomeHtml(n.def.tap)}</span>
+        <span>SWIPE ${this.outcomeHtml(n.def.swipe)}</span>
+        <span>WAIT ${this.outcomeHtml(n.def.wait)}</span>
+      </div>
       <div class="nbar"></div>`);
     el.setAttribute('style', frameStyle('#ffffff', 'solid', 3, 0.12));
     wrap.appendChild(el);
@@ -558,39 +444,26 @@ export class App {
     });
   }
 
-  /* ── traps: scam website / playable ad (inside the stage) ─────────── */
+  /* ── premium-ad website trap ──────────────────────────────────────── */
 
-  private renderTrap(): void {
-    const wrap = byId('trap');
-    const t = this.g.s.trap;
-    if (!t) { wrap.innerHTML = ''; wrap.className = ''; return; }
-    wrap.className = `show ${t.kind}`;
-    if (t.kind === 'website') {
-      wrap.innerHTML = `
-        <div class="site">
-          <div class="url">HTTPS://W1N-FR33-PR1ZE.BIZ</div>
-          <div class="blink">YOU WON!!!</div>
-          <div class="sitebody">CLOSE ${t.hits} POPUP${t.hits === 1 ? '' : 'S'}</div>
-          <button class="decoy" style="left:${t.dx}%;top:${t.dy}%">CLAIM PRIZE ${ICON.x}</button>
-          <div class="popup" style="left:${t.x}%;top:${t.y}%">
-            <button class="realx" aria-label="close">${ICON.x}</button>
-            DON'T GO!!
-          </div>
-        </div>`;
-    } else {
-      wrap.innerHTML = `
-        <div class="game">
-          <div class="gtitle">PLAYABLE AD</div>
-          <div class="gsub">HIT IT ${t.hits}×</div>
-          <button class="target" style="left:${t.x}%;top:${t.y}%" aria-label="target"></button>
-          <button class="decoy install" style="left:${t.dx}%;top:${Math.min(86, t.dy + 10)}%">INSTALL</button>
-        </div>`;
-    }
-    const real = wrap.querySelector<HTMLElement>(t.kind === 'website' ? '.realx' : '.target');
-    real?.addEventListener('pointerdown', (e) => { e.stopPropagation(); sfx.click(); buzz(10); this.g.trapTap(true); });
-    wrap.querySelector('.decoy')?.addEventListener('pointerdown', (e) => { e.stopPropagation(); sfx.deny(); this.g.trapTap(false); });
-    // swallow everything else so the post underneath doesn't get swiped
-    wrap.onpointerdown = (e) => e.stopPropagation();
+  private renderWebsite(): void {
+    const wrap = byId('website');
+    const w = this.g.s.website;
+    if (!w) { wrap.innerHTML = ''; wrap.className = ''; return; }
+    wrap.className = 'show';
+    wrap.innerHTML = `
+      <div class="site">
+        <div class="url">HTTPS://W1N-FR33-PR1ZE.BIZ</div>
+        <div class="blink">YOU WON!!!</div>
+        <div class="sitebody">CLOSE ${w.popups} POPUP${w.popups === 1 ? '' : 'S'}<br><span class="c-sub">−${fmt(CFG.WEBSITE_DRAIN)}/S</span></div>
+        <button class="decoy" style="left:${w.dx}%;top:${w.dy}%">CLAIM PRIZE ${ICON.x}</button>
+        <div class="popup" style="left:${w.x}%;top:${w.y}%">
+          <button class="realx" aria-label="close">${ICON.x}</button>
+          DON'T GO!!
+        </div>
+      </div>`;
+    wrap.querySelector('.realx')?.addEventListener('pointerdown', (e) => { e.stopPropagation(); sfx.click(); buzz(10); this.g.websiteTap(true); });
+    wrap.querySelector('.decoy')?.addEventListener('pointerdown', (e) => { e.stopPropagation(); sfx.deny(); this.g.websiteTap(false); });
   }
 
   /* ── overlays ─────────────────────────────────────────────────────── */
@@ -627,7 +500,6 @@ export class App {
     this.clearTimers();
     this.busy = false;
     this.hudHold = null;
-    this.armed = null;
     this.pauseReasons.clear();
     this.closeSheet();
     byId('tally').className = '';
@@ -643,9 +515,7 @@ export class App {
     this.closeSheet();
     this.g.s.phase = 'menu';
     this.g.s.notif = null;
-    this.g.s.trap = null;
     this.renderNotif();
-    this.renderTrap();
     this.renderOverlay();
   }
 
@@ -656,7 +526,6 @@ export class App {
       const best = r ? `BEST ${clock(r.best)} · ${r.wins}/${r.runs}` : 'NEW';
       return `<button class="mode" data-mode="${m.id}" style="${frameStyle('#ffffff', 'solid', 3, 0.06)}"><b>${m.name}</b><span>${m.line}</span><em>${best}</em></button>`;
     }).join('');
-    const old = OLD_VERSIONS.map((v) => `<a href="${v.href}">${v.name}</a>`).join(' · ');
     return `
       <div class="ov scroll">
         <h1 class="title">DOPADOOM</h1>
@@ -666,7 +535,7 @@ export class App {
           <button class="btn" data-a="help">HOW TO</button>
           <button class="btn" data-a="tweaks">TWEAKS</button>
         </div>
-        <p class="dim small old">OLD VERSIONS: ${old}</p>
+        <a class="dim small" href="../pilot1/">PLAY PILOT 1</a>
       </div>`;
   }
 
@@ -677,16 +546,16 @@ export class App {
     return `
       <div class="ov scroll">
         <p class="dim">${mode}</p>
-        <h1 class="title">${won ? 'AWAKE' : 'ASLEEP'}</h1>
+        <h1 class="title ${won ? 'c-add' : 'c-sub'}">${won ? 'AWAKE' : 'ASLEEP'}</h1>
         <div class="bigclock">${clock(s.minute)}</div>
         <p class="dim">${won ? 'YOU MADE IT' : esc(s.deathMsg)}</p>
         <div class="stats">
-          <div><span>MOVES</span><b>${st.moves}</b></div>
+          <div><span>MOVES</span><b>${st.actions}</b></div>
           <div><span>PEAK</span><b>${fmt(st.peak)}</b></div>
-          <div><span>SAVED</span><b>${st.saved}</b></div>
           <div><span>LIKED</span><b>${st.liked}</b></div>
           <div><span>DISLIKED</span><b>${st.disliked}</b></div>
-          <div><span>BLOCK/REP</span><b>${st.blocked + st.reported}</b></div>
+          <div><span>SAVED</span><b>${st.saved}</b></div>
+          <div><span>ADS</span><b>${st.ads}</b></div>
         </div>
         <button class="btn big" data-a="again">AGAIN</button>
         <button class="btn" data-a="modes">MODES</button>
@@ -695,7 +564,7 @@ export class App {
 
   openPause(): void {
     const s = this.g.s;
-    if (s.phase !== 'playing' && s.phase !== 'trap') return;
+    if (s.phase !== 'playing' && s.phase !== 'website') return;
     this.setPaused('menu', true);
     const ov = byId('overlay');
     ov.innerHTML = `
@@ -719,7 +588,7 @@ export class App {
     this.renderOverlay();
   }
 
-  /* ── sheets (help, tweaks) ────────────────────────────────────────── */
+  /* ── sheets ───────────────────────────────────────────────────────── */
 
   openSheet(html: string): HTMLElement {
     const sh = byId('sheet');
@@ -747,16 +616,17 @@ export class App {
       <div class="help">
         <div>${A('up')} SKIP</div><div>${A('down')} BACK</div>
         <div>${A('left')} DISLIKE</div><div>${A('right')} LIKE</div>
-        <div class="wide">NUMBERS = DOPA POINTS PER SWIPE</div>
-        <div class="wide">${ICON.bookmark} SAVE: ADD ITS EFFECT TO YOUR SWIPES. YOU STAY</div>
-        <div class="wide">${ICON.block} BLOCK · ${ICON.report} REPORT: MULTIPLY YOUR DOPA. GOOD OR BAD?</div>
-        <div class="wide">SAME REACTION AGAIN: NOTHING. OPPOSITE: YOU LOSE SOME</div>
-        <div class="wide">CHIPS APPLY LEFT TO RIGHT</div>
-        <div class="wide">TAP A CHIP TWICE: DELETE · HOLD: DRAG</div>
-        <div class="wide">ADS CAN'T BE SKIPPED</div>
+        <div class="wide">${ICON.bookmark} SAVE: TAKE ITS EFFECT INSTEAD</div>
+        <div class="wide">${ICON.kebab} BLOCK / REPORT</div>
+        <div class="wide">${A('left')} ${A('right')} ONCE PER POST</div>
+        <div class="wide">SAVED EFFECTS: LEFT ${A('right')} RIGHT</div>
+        <div class="wide"><span class="c-add">+</span> <span class="c-mul">×</span> GOOD · <span class="c-sub">−</span> <span class="c-div">÷</span> BAD</div>
+        <div class="wide">ADS CAN'T BE SKIPPED. TRYING COSTS.</div>
+        <div class="wide">UPKEEP: PAY EVERY ${CFG.UPKEEP_EVERY} MOVES</div>
+        <div class="wide">QUOTA: HAVE ENOUGH EVERY ${CFG.QUOTA_EVERY}</div>
+        <div class="wide">CLOCK: REAL TIME DRAIN</div>
         <div class="wide">SLEEP AT ${CFG.SLEEP_AT}</div>
       </div>
       <button class="btn" data-close>OK</button>`);
   }
 }
-

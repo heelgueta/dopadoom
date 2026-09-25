@@ -1,14 +1,14 @@
 {
   "name": "dopadoom",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host",
-    "build": "tsc --noEmit && vite build && npm run build:old",
+    "build": "tsc --noEmit && vite build && npm run build:pilot1",
+    "build:pilot1": "cd pilot1 && vite build --outDir ../dist/pilot1 --emptyOutDir",
     "preview": "vite preview --host",
-    "typecheck": "tsc --noEmit",
-    "build:old": "cd pilot1 && vite build --outDir ../dist/pilot1 --emptyOutDir && cd ../v2 && vite build --outDir ../dist/v2 --emptyOutDir"
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@fontsource/jersey-10": "^5.3.0",

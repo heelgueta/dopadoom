@@ -1,0 +1,14 @@
+{
+  ".x2":   { "group": "mult", "minHour": 1, "weight": 10, "swipes": "*2", "save": "*2" },
+  ".x3":   { "group": "mult", "minHour": 2, "weight": 10, "swipes": "*3", "save": "*3" },
+  ".x4":   { "group": "mult", "minHour": 3, "weight": 10, "swipes": "*4", "save": "*4" },
+  ".x5":   { "group": "mult", "minHour": 4, "weight": 10, "swipes": "*5", "save": "*5" },
+  ".x6":   { "group": "mult", "minHour": 5, "weight": 10, "swipes": "*6", "save": "*6" },
+  ".x7":   { "group": "mult", "minHour": 6, "weight": 10, "swipes": "*7", "save": "*7" },
+  ".x8":   { "group": "mult", "minHour": 7, "weight": 10, "swipes": "*8", "save": "*8" },
+
+  ".SLOP": { "group": "variant", "appliesTo": "good", "weight": 10,
+             "up": "=2", "down": "=0", "left": "*-4", "right": "*-1", "save": "*-1", "report": 0.8, "block": 1.5 },
+  ".REAC": { "group": "variant", "appliesTo": "bad", "weight": 10,
+             "up": "=2", "down": "=0", "left": "*2", "right": "*2", "save": "*-1", "report": 0.8, "block": 1.5 }
+}

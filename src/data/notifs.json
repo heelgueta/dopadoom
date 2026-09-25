@@ -1,0 +1,10 @@
+{
+  "FREN": { "weight": 10, "tap": 1.1, "swipe": 0.9, "wait": 0.9 },
+  "LOVE": { "weight": 6,  "tap": 1.2, "swipe": 0.8, "wait": 0.7 },
+  "FAMI": { "weight": 10, "tap": 1.1, "swipe": 0.8, "wait": 0.8 },
+  "GRUP": { "weight": 10, "tap": 1.1, "swipe": 0.9, "wait": 0.9 },
+  "SPAM": { "weight": 10, "tap": 0.9, "swipe": 0.9, "wait": 1 },
+  "SCAM": { "weight": 6,  "tap": 0.8, "swipe": 0.9, "wait": 1 },
+  "WORK": { "weight": 8,  "tap": 0.9, "swipe": 1.1, "wait": 1 },
+  "BANK": { "weight": 6,  "tap": 0.8, "swipe": 1.1, "wait": 1 }
+}

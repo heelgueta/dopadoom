@@ -1,0 +1,24 @@
+{
+  "CUTE":   { "kind": "good", "weight": 12, "up": 1,  "down": 0,  "left": -1, "right": 1,  "save": "→+2",          "report": 0.8, "block": 0.8 },
+  "SENS":   { "kind": "good", "weight": 8,  "up": -1, "down": -1, "left": -2, "right": 2,  "save": "→*2",          "report": 0.8, "block": 0.8 },
+  "LOOP":   { "kind": "good", "weight": 8,  "up": 0,  "down": -2, "left": -2, "right": 2,  "save": "↑*2",          "report": 0.8, "block": 0.8 },
+  "ARTS":   { "kind": "good", "weight": 8,  "up": 0,  "down": 0,  "left": -3, "right": 3,  "save": "↔+1",          "report": 0.8, "block": 0.8 },
+  "EDUC":   { "kind": "good", "weight": 8,  "up": 0,  "down": 0,  "left": -3, "right": 3,  "save": "↓+3",          "report": 0.8, "block": 0.8 },
+
+  "EDGY":   { "kind": "bad",  "weight": 8,  "up": 1,  "down": -1, "left": 1,  "right": -1, "save": "←+2",          "report": 0.8, "block": 1.1 },
+  "BAIT":   { "kind": "bad",  "weight": 8,  "up": 1,  "down": -1, "left": 2,  "right": -2, "save": "←*2",          "report": 0.8, "block": 1.2 },
+  "TURF":   { "kind": "bad",  "weight": 6,  "up": 2,  "down": 0,  "left": -1, "right": -2, "save": "↑+2",          "report": 1.2, "block": 1.1 },
+  "DRAM":   { "kind": "bad",  "weight": 6,  "up": 2,  "down": 2,  "left": 2,  "right": -2, "save": "↓*3",          "report": 0.8, "block": 1.5 },
+  "FAKE":   { "kind": "bad",  "weight": 6,  "up": 3,  "down": 3,  "left": -3, "right": -3, "save": "↕+1",          "report": 1.3, "block": 1.1 },
+
+  "REALAD": { "kind": "ad",   "weight": 5,  "ad": "real", "up": 1, "down": 1,  "left": 1, "right": 1,  "save": "↕↔+1",         "report": 0.8, "block": 1.5 },
+  "SCAMAD": { "kind": "ad",   "weight": 3,  "ad": "scam", "up": 0, "down": -2, "left": 2, "right": -3, "save": "←*3 & →*0.5",  "report": 1.5, "block": 1.1 },
+  "GAMEAD": { "kind": "ad",   "weight": 3,  "ad": "game", "up": 1, "down": 1,  "left": 1, "right": 1,  "save": "←*0.5 & →*3",  "report": 0.8, "block": 1.1 },
+
+  "CRYPTO": { "kind": "bad",  "weight": 4,  "up": -1, "down": 2,  "left": 2,  "right": -3, "save": "↕↔*pick(3,3,-3)", "report": 0.8, "block": 2 },
+
+  "CAPTCH": { "kind": "special", "weight": 2, "special": "captcha", "minHour": 1 },
+  "GLITCH": { "kind": "special", "weight": 3, "special": "glitch",
+              "up": "rand(-3,3)", "down": "rand(-3,3)", "left": "rand(-4,2)", "right": "rand(-2,4)",
+              "save": "↕+rand(-2,2) & ↔+rand(-2,2)", "report": 0.5, "block": 0.8 }
+}
