@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#07070a"/>
+  <rect x="136" y="64" width="240" height="384" rx="36" fill="none" stroke="#6dff8a" stroke-width="20"/>
+  <text x="256" y="300" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="150" font-weight="900" fill="#6dff8a">D</text>
+  <path d="M256 120 l-28 36 h56 z" fill="#ff4d4d"/>
+</svg>

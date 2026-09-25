@@ -1,108 +1,98 @@
 /**
- * CONFIG — every tunable number in the game lives here.
- *
- * The in-game TWEAKS panel (⏸ → tweaks) edits this object live and persists
- * your overrides in localStorage, so you can tune on your phone without
- * redeploying. When something feels right, copy the JSON from the panel and
- * paste the values into DEFAULTS below to make them the new baseline.
- *
- * Rule: no magic numbers elsewhere. If you catch yourself hardcoding a
- * balance value in engine/ or content/, move it here.
+ * CONFIG — every tunable number. The in-game TWEAKS panel edits this live and
+ * saves overrides on the device. "copy config" → paste into DEFAULTS to make
+ * a tweak the new baseline. No balance numbers anywhere else.
  */
 
 const DEFAULTS = {
-  // ── economy ─────────────────────────────────────────────
+  // ── core ────────────────────────────────────────────────
   START_DOPA: 10,
-  /** base dopa for an up/down swipe, before card + saved effects */
-  BASE_SWIPE_GAIN: 1,
-  /** if true, a right-swipe (save) also gets the base gain */
-  SAVE_GIVES_BASE: false,
-  /** each repeat of the same swipe on the same card loses this fraction (1 → .9 → .8 …) */
-  REPEAT_DECAY_STEP: 0.1,
-  /** floor for the repeat-decay multiplier */
-  REPEAT_DECAY_MIN: 0,
-  /** dopa lost when you try a disabled swipe */
-  BAD_SWIPE_PENALTY: 1,
-  /** saved-effect slots at run start */
-  SAVED_SLOTS: 5,
-  /** hard cap for slots (chargers etc. can raise SAVED_SLOTS up to this) */
-  MAX_SLOTS: 8,
-
-  // ── time ────────────────────────────────────────────────
-  /** at 1× speed, how many real seconds one fake minute takes (1 → 1 hour = 60s, full night = 8min) */
-  REAL_SECONDS_PER_FAKE_MINUTE: 1,
-  /** game speed multiplier (testing lever, not a mechanic yet) */
-  SPEED: 1,
-  /** reach this hour to win (8 → 08:00) */
-  VICTORY_HOUR: 8,
-  /** show the between-hours choice screen */
-  HOUR_BREAKS: true,
-  /** pause the clock while a sheet (effect detail, tweaks) is open */
-  PAUSE_ON_SHEET: true,
-
-  // ── drain ───────────────────────────────────────────────
-  /** dopa lost per fake minute during hour 0 */
-  DRAIN_BASE: 0.4,
-  /** drain grows by this fraction per hour: base × (1 + growth × hour) × exp^hour */
-  DRAIN_HOUR_GROWTH: 0.35,
-  /** exponential hourly drain growth (balatro blinds). 1 = off */
-  DRAIN_HOUR_EXP: 1.6,
-  /** TOLERANCE: extra drain = this fraction of your positive dopa, per fake minute. stops hoarding */
-  DRAIN_TOLERANCE: 0.01,
-  /** the last N fake minutes of every hour are the BOSS window */
-  BOSS_MINUTES: 10,
-  /** drain multiplier during the boss window */
-  BOSS_DRAIN_MULT: 2,
-  /** drain multiplier while trapped on a premium-ad website */
-  WEBSITE_DRAIN_MULT: 3,
-  /** drain multiplier while dopa is below zero (the drowsy spiral) */
-  NEGATIVE_DRAIN_MULT: 1.5,
-
-  // ── sleep ───────────────────────────────────────────────
-  /** you fall asleep when dopa ≤ this. negative = beta grace zone */
+  /** you fall asleep at or below this */
   SLEEP_AT: -10,
-  /** below this dopa your eyes start closing (visual only) */
-  DROWSY_AT: 3,
-  /** never fall asleep (for exploring content) */
+  /** never fall asleep (for poking around) */
   GOD_MODE: false,
+  SAVE_SLOTS: 5,
+  /** repeat ↑/↓ on the same post: value × (1 − step × times) */
+  REPEAT_DECAY_STEP: 0.1,
+  /** dopa lost when you try something that isn't allowed */
+  BAD_MOVE_PENALTY: 1,
 
-  // ── spawns / events ─────────────────────────────────────
-  /** chance per fake minute that a notification pops up */
-  NOTIF_CHANCE_PER_MIN: 0.07,
-  /** fake minutes a notification stays before counting as ignored */
-  NOTIF_LIFETIME_MIN: 6,
-  /** dopa cost per remaining fake minute when you skip an ad early */
-  AD_SKIP_COST_PER_MIN: 1,
-  /** AUTOPLAY boss: forced up-swipe every N fake minutes */
-  AUTOPLAY_EVERY_MIN: 2,
-  /** show the scripted intro cards at run start */
-  INTRO_CARDS: true,
+  // ── pacing / feedback ───────────────────────────────────
+  /** show the scoring tally between posts (input is locked while it plays) */
+  FEEDBACK: true,
+  /** ms per step of the tally (base, each saved effect, decay…) */
+  TALLY_STEP_MS: 220,
+  /** ms the final result stays before the next post slides in */
+  TALLY_HOLD_MS: 280,
+  /** extra ms when a check (upkeep / quota) happens */
+  CHECK_HOLD_MS: 900,
+
+  // ── night / clock ───────────────────────────────────────
+  /** win at this fake hour (8 → 08:00) */
+  WIN_HOUR: 8,
+  /** turn modes: fake minutes per action (5 → 12 actions per hour, 96 to win) */
+  MIN_PER_TURN: 5,
+
+  // ── mode: UPKEEP ────────────────────────────────────────
+  /** every N actions you pay upkeep */
+  UPKEEP_EVERY: 12,
+  UPKEEP_BASE: 10,
+  /** upkeep × this every time it's paid */
+  UPKEEP_GROWTH: 1.6,
+
+  // ── mode: QUOTA ─────────────────────────────────────────
+  /** every N actions you must HAVE at least the quota (not spent) */
+  QUOTA_EVERY: 12,
+  QUOTA_BASE: 15,
+  QUOTA_GROWTH: 1.85,
+
+  // ── mode: CLOCK (real time) ─────────────────────────────
+  /** real seconds per fake minute (1 → 1 hour per real minute, 8 min run) */
+  CLOCK_SEC_PER_MIN: 1,
+  /** dopa drained per real second in hour 0 */
+  CLOCK_DRAIN: 0.5,
+  /** drain × (1 + growth × hour) */
+  CLOCK_DRAIN_GROWTH: 0.5,
+  /** TOLERANCE: also lose this fraction of your (positive) dopa per second. stops hoarding */
+  CLOCK_TOLERANCE: 0.01,
+
+  // ── ads ─────────────────────────────────────────────────
+  /** roughly one ad every N posts */
+  AD_EVERY: 7,
+  /** chance an ad is PREMIUM (website trap) */
+  PREMIUM_CHANCE: 0.25,
+  AD_SECS_MIN: 3,
+  AD_SECS_MAX: 5,
+  PREMIUM_SECS: 8,
+  /** each skip attempt costs tries × this */
+  AD_TRY_COST: 1,
+  /** each skip attempt adds this many seconds */
+  AD_TRY_ADD_SECS: 1,
+  /** dopa lost per second while trapped on a website */
+  WEBSITE_DRAIN: 1,
+  /** real X taps needed to escape */
+  WEBSITE_POPUPS: 3,
+
+  // ── notifications ───────────────────────────────────────
+  /** chance per action that a notification pops */
+  NOTIF_CHANCE: 0.18,
+  /** real seconds before it counts as WAIT (ignored) */
+  NOTIF_SECS: 5,
 
   // ── feel ────────────────────────────────────────────────
-  /** drag distance (px) to commit a swipe (slik used 100) */
-  SWIPE_THRESHOLD_PX: 90,
-  /** a fast flick commits even under the threshold (px/ms) */
+  SWIPE_THRESHOLD_PX: 80,
   FLICK_VELOCITY: 0.5,
-  /** movement (px) before the gesture locks to an axis */
   AXIS_LOCK_PX: 10,
-  /** card fly-out / fly-in duration (ms) */
-  ANIM_MS: 220,
-  /** how much a disabled direction resists the drag (0 = frozen, 1 = free) */
-  RUBBER_BAND: 0.3,
+  ANIM_MS: 200,
   SOUND: true,
   HAPTICS: true,
-  /** show the balatro-style scoring breakdown under the HUD */
-  SHOW_BREAKDOWN: true,
-  /** show computed "= +3.4" previews on card edges */
-  SHOW_PREVIEWS: true,
-  /** scanline overlay */
   CRT: true,
 };
 
 export type Config = { -readonly [K in keyof typeof DEFAULTS]: (typeof DEFAULTS)[K] };
 export type ConfigKey = keyof Config;
 
-const STORAGE_KEY = 'dopadoom.config.v1';
+const STORAGE_KEY = 'dopadoom2.config';
 
 function loadOverrides(): Partial<Config> {
   try {
@@ -113,24 +103,16 @@ function loadOverrides(): Partial<Config> {
   }
 }
 
-/** The live config. Mutated by the tweaks panel. Read it at use-time, don't cache values. */
 export const CFG: Config = { ...DEFAULTS, ...loadOverrides() };
 
-export function defaults(): Config {
-  return { ...DEFAULTS };
+export function configDiff(): Partial<Config> {
+  const diff: Record<string, unknown> = {};
+  for (const k of Object.keys(DEFAULTS) as ConfigKey[]) if (CFG[k] !== DEFAULTS[k]) diff[k] = CFG[k];
+  return diff as Partial<Config>;
 }
 
-/** Persist only values that differ from DEFAULTS. */
 export function saveConfig(): void {
-  const diff: Record<string, unknown> = {};
-  for (const k of Object.keys(DEFAULTS) as ConfigKey[]) {
-    if (CFG[k] !== DEFAULTS[k]) diff[k] = CFG[k];
-  }
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(diff));
-  } catch {
-    /* private mode etc — tweaks just won't persist */
-  }
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(configDiff())); } catch { /* ignore */ }
 }
 
 export function resetConfig(): void {
@@ -138,71 +120,65 @@ export function resetConfig(): void {
   saveConfig();
 }
 
-export function configDiff(): Partial<Config> {
-  const diff: Partial<Config> = {};
-  for (const k of Object.keys(DEFAULTS) as ConfigKey[]) {
-    if (CFG[k] !== DEFAULTS[k]) (diff as Record<string, unknown>)[k] = CFG[k];
-  }
-  return diff;
-}
-
-/* ── metadata for the tweaks panel ─────────────────────────────────────── */
+/* ── tweaks panel metadata ── */
 
 export interface FieldMeta {
   key: ConfigKey;
   group: string;
-  /** shown under the control in the tweaks panel */
-  desc: string;
   min?: number;
   max?: number;
   step?: number;
-  /** discrete choices for number fields (renders as buttons) */
-  choices?: number[];
 }
 
+const f = (group: string, key: ConfigKey, min?: number, max?: number, step?: number): FieldMeta => ({ key, group, min, max, step });
+
 export const FIELDS: FieldMeta[] = [
-  { key: 'SPEED', group: 'time', desc: 'game speed. 1× = 1 fake hour per minute', choices: [0.25, 0.5, 1, 2, 4] },
-  { key: 'REAL_SECONDS_PER_FAKE_MINUTE', group: 'time', desc: 'real seconds per fake minute at 1×', min: 0.25, max: 10, step: 0.25 },
-  { key: 'VICTORY_HOUR', group: 'time', desc: 'survive until this hour to win', min: 1, max: 12, step: 1 },
-  { key: 'HOUR_BREAKS', group: 'time', desc: 'show the coffee/choices screen every hour' },
-  { key: 'PAUSE_ON_SHEET', group: 'time', desc: 'freeze the clock while an effect sheet is open' },
+  f('core', 'START_DOPA', 0, 100, 1),
+  f('core', 'SLEEP_AT', -50, 0, 1),
+  f('core', 'GOD_MODE'),
+  f('core', 'SAVE_SLOTS', 1, 8, 1),
+  f('core', 'REPEAT_DECAY_STEP', 0, 0.5, 0.05),
+  f('core', 'BAD_MOVE_PENALTY', 0, 5, 0.5),
 
-  { key: 'START_DOPA', group: 'economy', desc: 'dopa at the start of a run (needs restart)', min: 0, max: 100, step: 1 },
-  { key: 'BASE_SWIPE_GAIN', group: 'economy', desc: 'base gain for ↑ / ↓', min: 0, max: 5, step: 0.1 },
-  { key: 'SAVE_GIVES_BASE', group: 'economy', desc: '→ save also gets the base gain' },
-  { key: 'REPEAT_DECAY_STEP', group: 'economy', desc: 'repeat swipes on the same card lose this much each time', min: 0, max: 1, step: 0.05 },
-  { key: 'REPEAT_DECAY_MIN', group: 'economy', desc: 'repeat decay never goes below this multiplier', min: 0, max: 1, step: 0.05 },
-  { key: 'BAD_SWIPE_PENALTY', group: 'economy', desc: 'dopa lost on a disabled swipe', min: 0, max: 10, step: 0.5 },
-  { key: 'SAVED_SLOTS', group: 'economy', desc: 'saved slots at run start (needs restart)', min: 1, max: 8, step: 1 },
-  { key: 'MAX_SLOTS', group: 'economy', desc: 'slot cap (phone chargers raise slots up to this)', min: 1, max: 8, step: 1 },
+  f('pacing', 'FEEDBACK'),
+  f('pacing', 'TALLY_STEP_MS', 0, 800, 20),
+  f('pacing', 'TALLY_HOLD_MS', 0, 1500, 20),
+  f('pacing', 'CHECK_HOLD_MS', 0, 3000, 50),
 
-  { key: 'DRAIN_BASE', group: 'drain', desc: 'dopa drained per fake minute in hour 0', min: 0, max: 3, step: 0.05 },
-  { key: 'DRAIN_HOUR_GROWTH', group: 'drain', desc: 'drain × (1 + this × hour)', min: 0, max: 2, step: 0.05 },
-  { key: 'DRAIN_HOUR_EXP', group: 'drain', desc: 'drain × this^hour (exponential ramp)', min: 1, max: 3, step: 0.05 },
-  { key: 'DRAIN_TOLERANCE', group: 'drain', desc: 'tolerance: lose this fraction of positive dopa per fake minute', min: 0, max: 0.1, step: 0.005 },
-  { key: 'BOSS_MINUTES', group: 'drain', desc: 'boss window length at the end of each hour', min: 0, max: 30, step: 1 },
-  { key: 'BOSS_DRAIN_MULT', group: 'drain', desc: 'drain multiplier during bosses', min: 1, max: 5, step: 0.25 },
-  { key: 'WEBSITE_DRAIN_MULT', group: 'drain', desc: 'drain multiplier while trapped on a website', min: 1, max: 10, step: 0.5 },
-  { key: 'NEGATIVE_DRAIN_MULT', group: 'drain', desc: 'drain multiplier while dopa < 0', min: 0.5, max: 5, step: 0.25 },
+  f('night', 'WIN_HOUR', 1, 12, 1),
+  f('night', 'MIN_PER_TURN', 1, 30, 1),
 
-  { key: 'SLEEP_AT', group: 'sleep', desc: 'you fall asleep at this dopa', min: -50, max: 0, step: 1 },
-  { key: 'DROWSY_AT', group: 'sleep', desc: 'eyes start closing below this', min: -10, max: 20, step: 1 },
-  { key: 'GOD_MODE', group: 'sleep', desc: 'never fall asleep' },
+  f('upkeep', 'UPKEEP_EVERY', 3, 30, 1),
+  f('upkeep', 'UPKEEP_BASE', 0, 50, 1),
+  f('upkeep', 'UPKEEP_GROWTH', 1, 3, 0.05),
 
-  { key: 'NOTIF_CHANCE_PER_MIN', group: 'events', desc: 'notification chance per fake minute', min: 0, max: 1, step: 0.01 },
-  { key: 'NOTIF_LIFETIME_MIN', group: 'events', desc: 'fake minutes before a notification counts as ignored', min: 1, max: 30, step: 1 },
-  { key: 'AD_SKIP_COST_PER_MIN', group: 'events', desc: 'skip-ad cost per remaining fake minute', min: 0, max: 5, step: 0.25 },
-  { key: 'AUTOPLAY_EVERY_MIN', group: 'events', desc: 'AUTOPLAY boss scrolls every N fake minutes', min: 1, max: 10, step: 1 },
-  { key: 'INTRO_CARDS', group: 'events', desc: 'scripted intro cards (needs restart)' },
+  f('quota', 'QUOTA_EVERY', 3, 30, 1),
+  f('quota', 'QUOTA_BASE', 0, 100, 1),
+  f('quota', 'QUOTA_GROWTH', 1, 3, 0.05),
 
-  { key: 'SWIPE_THRESHOLD_PX', group: 'feel', desc: 'drag distance to commit a swipe', min: 30, max: 200, step: 5 },
-  { key: 'FLICK_VELOCITY', group: 'feel', desc: 'flick speed that commits early (px/ms)', min: 0.1, max: 2, step: 0.05 },
-  { key: 'AXIS_LOCK_PX', group: 'feel', desc: 'movement before locking to vertical/horizontal', min: 2, max: 40, step: 1 },
-  { key: 'ANIM_MS', group: 'feel', desc: 'card animation duration', min: 60, max: 600, step: 10 },
-  { key: 'RUBBER_BAND', group: 'feel', desc: 'how far a disabled direction lets you drag', min: 0, max: 1, step: 0.05 },
-  { key: 'SOUND', group: 'feel', desc: 'bleeps' },
-  { key: 'HAPTICS', group: 'feel', desc: 'vibration (android only, iOS blocks it)' },
-  { key: 'SHOW_BREAKDOWN', group: 'feel', desc: 'scoring breakdown line under the HUD' },
-  { key: 'SHOW_PREVIEWS', group: 'feel', desc: 'computed totals on card edges' },
-  { key: 'CRT', group: 'feel', desc: 'scanlines' },
+  f('clock', 'CLOCK_SEC_PER_MIN', 0.25, 10, 0.25),
+  f('clock', 'CLOCK_DRAIN', 0, 3, 0.05),
+  f('clock', 'CLOCK_DRAIN_GROWTH', 0, 2, 0.05),
+  f('clock', 'CLOCK_TOLERANCE', 0, 0.05, 0.0025),
+
+  f('ads', 'AD_EVERY', 2, 30, 1),
+  f('ads', 'PREMIUM_CHANCE', 0, 1, 0.05),
+  f('ads', 'AD_SECS_MIN', 1, 15, 1),
+  f('ads', 'AD_SECS_MAX', 1, 20, 1),
+  f('ads', 'PREMIUM_SECS', 1, 30, 1),
+  f('ads', 'AD_TRY_COST', 0, 5, 0.5),
+  f('ads', 'AD_TRY_ADD_SECS', 0, 5, 0.5),
+  f('ads', 'WEBSITE_DRAIN', 0, 5, 0.25),
+  f('ads', 'WEBSITE_POPUPS', 1, 10, 1),
+
+  f('notifs', 'NOTIF_CHANCE', 0, 1, 0.02),
+  f('notifs', 'NOTIF_SECS', 1, 20, 0.5),
+
+  f('feel', 'SWIPE_THRESHOLD_PX', 30, 200, 5),
+  f('feel', 'FLICK_VELOCITY', 0.1, 2, 0.05),
+  f('feel', 'AXIS_LOCK_PX', 2, 40, 1),
+  f('feel', 'ANIM_MS', 60, 600, 10),
+  f('feel', 'SOUND'),
+  f('feel', 'HAPTICS'),
+  f('feel', 'CRT'),
 ];

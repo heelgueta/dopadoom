@@ -1,51 +1,58 @@
 /**
- * APP — the whole UI. Listens to Game events and animates; forwards input to
- * the Game. Sections:
- *   skeleton · frame loop · card stage (drag + fly animations) · HUD & chips ·
- *   floats/toasts/breakdown · notifications · website trap · overlays · sheets
+ * APP — all DOM. Listens to Game events, forwards input.
+ *
+ * PACING: after every action the post flies away and a TALLY plays in the
+ * middle of the screen (op → each saved effect → decay → total). Input is
+ * locked until it finishes, so you actually see what your choice did.
+ * Tunable: FEEDBACK, TALLY_STEP_MS, TALLY_HOLD_MS, CHECK_HOLD_MS.
  */
 import { CFG } from '../config';
-import type { Game, SwipeEvent } from '../engine/game';
-import { loadRecords } from '../engine/game';
-import type { Dir, EffectInstance, GainResult, Tone } from '../types';
-import { ARROW } from '../types';
-import { clamp, clock, fmt, signed } from '../util';
+import type { ActEvent, Game } from '../engine/game';
+import { loadRecords, MODES } from '../engine/game';
+import { opHtml, signCls, signedText } from '../engine/ops';
+import type { Action, Dir, ModeId, OutcomeDef } from '../types';
+import { clamp, clock, fmt } from '../util';
 import { buzz, sfx, unlockAudio } from './audio';
-import { renderCard, setStamp, updateCard } from './cardView';
 import { byId, esc, h, setText } from './dom';
 import { Gestures } from './gestures';
+import { arrow, frameStyle, ICON, modsHtml } from './pixel';
+import { kebabMenuHtml, renderPost, setStamp, updatePost } from './postView';
 import { openTweaks } from './tweaks';
 
-const EASE = 'cubic-bezier(.25,.46,.45,.94)'; // slik's curve
+const EASE = 'cubic-bezier(.25,.46,.45,.94)';
 
-const OUT: Record<Dir, string> = {
-  up: 'translate(0,-115%)',
-  down: 'translate(0,115%)',
-  left: 'translate(-140%,4%) rotate(-24deg)',
-  right: 'translate(140%,4%) rotate(24deg)',
+const OUT: Record<Action, Keyframe> = {
+  up: { transform: 'translate(0,-115%)' },
+  down: { transform: 'translate(0,115%)' },
+  left: { transform: 'translate(-140%,4%) rotate(-18deg)' },
+  right: { transform: 'translate(140%,4%) rotate(18deg)' },
+  save: { transform: 'translate(0,-60%) scale(.15)', opacity: 0 },
+  block: { transform: 'translate(0,30%) scale(.85)', opacity: 0 },
+  report: { transform: 'translate(0,30%) scale(.85)', opacity: 0 },
 };
-const IN: Record<Dir, string> = {
-  up: 'translate(0,100%)',
-  down: 'translate(0,-100%)',
-  left: 'scale(.9)',
-  right: 'scale(.9)',
+const IN: Record<Action, string> = {
+  up: 'translate(0,100%)', down: 'translate(0,-100%)', left: 'scale(.9)', right: 'scale(.9)',
+  save: 'scale(.9)', block: 'scale(.9)', report: 'scale(.9)',
 };
 
 export class App {
   private stage!: HTMLElement;
-  private cardEl!: HTMLElement;
+  private postEl: HTMLElement | null = null;
   private gestures!: Gestures;
+  private busy = false;
+  private timers: number[] = [];
   private pauseReasons = new Set<string>();
-  private labelTimer = 0;
-  private chipTimer = 0;
+  private shownDopa = 0;
+  /** while the tally plays, the HUD shows this instead of the real dopa */
+  private hudHold: number | null = null;
+  private refreshT = 0;
   private dragDir: Dir | null = null;
 
   constructor(private g: Game, private root: HTMLElement) {
     this.build();
     this.wire();
-    this.mountCard(false);
-    this.renderChips();
     this.applyCfgClasses();
+    this.renderOverlay();
   }
 
   /* ── skeleton ─────────────────────────────────────────────────────── */
@@ -54,138 +61,179 @@ export class App {
     this.root.innerHTML = `
       <header id="hud">
         <div class="hud-row">
-          <div class="dopa-box">
-            <div class="lbl">DOPA</div>
-            <div id="dopa">10</div>
-            <div id="drain"></div>
-          </div>
-          <div class="clock-box">
-            <div id="clock">00:00</div>
-            <div id="bossinfo"></div>
-          </div>
-          <button id="pausebtn" aria-label="pause">❚❚</button>
+          <div class="dopa-box"><div class="lbl">DOPA</div><div id="dopa">10</div></div>
+          <div class="right-box"><div id="clock">00:00</div><div id="status"></div></div>
+          <button id="pausebtn" aria-label="pause">${ICON.pause}</button>
         </div>
         <div id="chips"></div>
-        <div id="breakdown"></div>
-        <div id="mods"></div>
       </header>
       <main id="stage">
+        <div id="tally"><div class="t-small"></div><div class="t-big"></div></div>
         <div id="notif"></div>
-        <div id="hint">↑ swipe up</div>
       </main>
       <div id="floats"></div>
-      <div id="toasts"></div>
-      <div id="lids"><div class="lid top"></div><div class="lid bot"></div></div>
-      <div id="crt"></div>
+      <div id="toast"></div>
       <div id="website"></div>
       <div id="overlay"></div>
       <div id="sheet"></div>
+      <div id="crt"></div>
     `;
     this.stage = byId('stage');
+    byId('pausebtn').setAttribute('style', frameStyle('#ffffff', 'solid', 2, 0));
   }
 
   private wire(): void {
     const g = this.g;
     this.gestures = new Gestures(this.stage, {
-      onStart: () => unlockAudio(),
+      onStart: () => { unlockAudio(); this.closeMenu(); },
       onMove: (dx, dy, dir) => this.drag(dx, dy, dir),
       onEnd: (dir) => this.release(dir),
     });
 
-    g.on('swiped', (e) => this.onSwiped(e));
-    g.on('denied', (e) => this.onDenied(e.dir, e.reason));
-    g.on('gain', (r) => this.onGain(r));
+    g.on('acted', (e) => this.onActed(e));
+    g.on('denied', (e) => this.onDenied(e.reason));
+    g.on('adTry', (e) => { this.shake(); sfx.deny(); this.float(-e.cost, 'AD'); this.refresh(); });
     g.on('float', (f) => this.float(f.amount, f.label));
-    g.on('toast', (t) => this.toast(t.msg, t.tone));
-    g.on('effects', () => { this.renderChips(); this.refreshLabels(); });
-    g.on('boss', (on) => this.onBoss(on));
+    g.on('toast', (t) => this.toast(t));
+    g.on('effects', () => { this.renderChips(); this.refresh(); });
     g.on('notif', () => this.renderNotif());
     g.on('website', () => this.renderWebsite());
     g.on('phase', () => this.renderOverlay());
-    g.on('adDone', () => { sfx.adDone(); this.refreshLabels(); });
-    g.on('refresh', () => this.mountCard(false));
-    g.on('reset', () => { this.pauseReasons.clear(); this.closeSheet(); this.hideOverlay(); this.mountCard(false); this.renderChips(); this.renderOverlay(); this.renderNotif(); this.renderWebsite(); });
+    g.on('adDone', () => { sfx.adDone(); this.refresh(); });
 
     byId('pausebtn').addEventListener('click', () => { unlockAudio(); this.openPause(); });
     byId('chips').addEventListener('click', (e) => {
       const chip = (e.target as HTMLElement).closest<HTMLElement>('.chip[data-uid]');
-      if (chip) this.openEffectSheet(Number(chip.dataset.uid));
+      if (chip) this.openChip(Number(chip.dataset.uid));
     });
 
     window.addEventListener('keydown', (e) => {
-      const map: Record<string, Dir> = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', w: 'up', s: 'down', a: 'left', d: 'right' };
-      if (e.key === ' ' || e.key === 'Escape' || e.key === 'p') { e.preventDefault(); this.pauseReasons.has('menu') ? this.closeOverlayPause() : this.openPause(); return; }
-      const dir = map[e.key];
-      if (dir && !e.repeat && this.g.s.phase === 'playing' && !this.g.s.paused) { e.preventDefault(); unlockAudio(); this.g.swipe(dir); }
+      const map: Record<string, Action> = {
+        ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right', w: 'up', s: 'down', a: 'left', d: 'right', b: 'save',
+      };
+      if (e.key === ' ' || e.key === 'Escape') { e.preventDefault(); this.pauseReasons.has('menu') ? this.closePause() : this.openPause(); return; }
+      const a = map[e.key];
+      if (a && !e.repeat) { e.preventDefault(); unlockAudio(); this.doAct(a); }
     });
-
     document.addEventListener('visibilitychange', () => {
-      if (document.hidden && this.g.s.started && this.g.s.phase === 'playing') this.openPause();
+      if (document.hidden && this.g.s.phase === 'playing') this.openPause();
     });
-    // kill pull-to-refresh / bounce like slik did
     document.addEventListener('touchmove', (e) => { if (!(e.target as HTMLElement).closest('.scroll')) e.preventDefault(); }, { passive: false });
-  }
-
-  setPaused(reason: string, on: boolean): void {
-    if (on) this.pauseReasons.add(reason); else this.pauseReasons.delete(reason);
-    this.g.s.paused = this.pauseReasons.size > 0;
   }
 
   applyCfgClasses(): void {
     this.root.classList.toggle('crt', CFG.CRT);
   }
 
-  /* ── frame loop (called from main.ts) ─────────────────────────────── */
+  private setPaused(reason: string, on: boolean): void {
+    if (on) this.pauseReasons.add(reason); else this.pauseReasons.delete(reason);
+    this.g.s.paused = this.pauseReasons.size > 0;
+  }
+
+  /* ── frame ────────────────────────────────────────────────────────── */
 
   frame(dt: number): void {
     const s = this.g.s;
-    this.renderHud();
-    this.labelTimer += dt;
-    if (this.labelTimer > 0.2) { this.labelTimer = 0; if (!this.gestures.dragging) this.refreshLabels(); }
-    this.chipTimer += dt;
-    if (this.chipTimer > 0.5) { this.chipTimer = 0; this.renderChips(); }
-    this.renderLids();
+    // HUD dopa counts toward its target (Balatro-ish tick-up)
+    const target = this.hudHold ?? s.dopa;
+    this.shownDopa += (target - this.shownDopa) * Math.min(1, dt * 12);
+    if (Math.abs(target - this.shownDopa) < 0.05) this.shownDopa = target;
+    const d = byId('dopa');
+    setText(d, fmt(this.shownDopa));
+    d.className = this.shownDopa < 0 ? 'c-sub neg' : '';
+    setText(byId('clock'), clock(s.minute));
+    this.renderStatus();
+
+    this.refreshT += dt;
+    if (this.refreshT > 0.15) { this.refreshT = 0; if (!this.gestures.dragging) this.refresh(); }
     if (s.notif) {
       const bar = document.querySelector<HTMLElement>('#notif .nbar');
-      if (bar) bar.style.width = `${clamp((s.notif.expiresAt - s.minute) / CFG.NOTIF_LIFETIME_MIN, 0, 1) * 100}%`;
+      if (bar) bar.style.width = `${clamp(s.notif.left / CFG.NOTIF_SECS, 0, 1) * 100}%`;
     }
-    byId('hint').classList.toggle('show', !s.started && s.phase === 'playing');
+    // drowsy: the screen darkens as you approach sleep
+    const drowsy = clamp((3 - s.dopa) / (3 - CFG.SLEEP_AT), 0, 1);
+    this.stage.style.filter = drowsy > 0 ? `brightness(${1 - drowsy * 0.6}) saturate(${1 - drowsy * 0.7})` : '';
   }
 
-  /* ── card stage ───────────────────────────────────────────────────── */
-
-  private mountCard(animateFrom: Dir | false): void {
-    const old = this.cardEl;
-    this.cardEl = renderCard(this.g, this.g.current());
-    this.stage.insertBefore(this.cardEl, byId('notif'));
-    if (old && !animateFrom) old.remove();
-    if (animateFrom) {
-      this.cardEl.animate([{ transform: IN[animateFrom], opacity: 0.6 }, { transform: 'none', opacity: 1 }], { duration: CFG.ANIM_MS, easing: EASE });
-    }
+  private renderStatus(): void {
+    const g = this.g;
+    const st = byId('status');
+    const nc = g.nextCheck();
+    let html: string;
+    if (nc?.kind === 'upkeep') html = `PAY <span class="c-sub">${nc.amount}</span> IN ${nc.in}`;
+    else if (nc?.kind === 'quota') html = `NEED <span class="${g.s.dopa >= nc.amount ? 'c-add' : 'c-sub'}">${nc.amount}</span> IN ${nc.in}`;
+    else html = `<span class="c-sub">−${g.drainRate().toFixed(2)}/S</span>`;
+    if (st.dataset.h !== html) { st.innerHTML = html; st.dataset.h = html; }
   }
 
-  private refreshLabels(): void {
-    if (this.cardEl) updateCard(this.g, this.cardEl, this.g.current());
+  private refresh(): void {
+    const p = this.g.current();
+    if (this.postEl && Number(this.postEl.dataset.uid) === p.uid) updatePost(this.g, this.postEl, p);
+  }
+
+  /* ── posts ────────────────────────────────────────────────────────── */
+
+  private mountPost(from: Action | null): void {
+    const p = this.g.current();
+    const el = renderPost(this.g, p);
+    this.stage.insertBefore(el, byId('tally'));
+    if (this.postEl && !this.postEl.classList.contains('leaving')) this.postEl.remove();
+    this.postEl = el;
+    this.g.viewing = p.uid;
+    if (from) el.animate([{ transform: IN[from], opacity: 0.4 }, { transform: 'none', opacity: 1 }], { duration: CFG.ANIM_MS, easing: EASE });
+
+    const stop = (e: Event) => e.stopPropagation();
+    const save = el.querySelector<HTMLElement>('.b-save')!;
+    const keb = el.querySelector<HTMLElement>('.b-kebab')!;
+    [save, keb].forEach((b) => b.addEventListener('pointerdown', stop));
+    save.addEventListener('click', () => { unlockAudio(); this.doAct('save'); });
+    keb.addEventListener('click', () => { unlockAudio(); this.toggleMenu(); });
+  }
+
+  private toggleMenu(): void {
+    const el = this.postEl;
+    if (!el || this.busy) return;
+    const p = this.g.current();
+    if (p.ad && !p.ad.done) { this.doAct('block'); return; } // counts as an ad skip attempt
+    const menu = el.querySelector<HTMLElement>('.menu')!;
+    if (menu.classList.contains('show')) { this.closeMenu(); return; }
+    menu.innerHTML = kebabMenuHtml(this.g, p);
+    menu.setAttribute('style', frameStyle('#ffffff', 'solid', 3, 0));
+    menu.classList.add('show');
+    menu.querySelectorAll<HTMLElement>('[data-act]').forEach((b) => {
+      b.addEventListener('pointerdown', (e) => e.stopPropagation());
+      b.addEventListener('click', () => { this.closeMenu(); this.doAct(b.dataset.act as Action); });
+    });
+    sfx.click();
+  }
+
+  private closeMenu(): void {
+    this.postEl?.querySelector('.menu')?.classList.remove('show');
+  }
+
+  private doAct(a: Action): void {
+    if (this.busy || this.g.s.phase !== 'playing' || this.g.s.paused) return;
+    this.g.act(a);
   }
 
   private drag(dx: number, dy: number, dir: Dir | null): void {
+    const el = this.postEl;
     const s = this.g.s;
-    if (s.phase !== 'playing' || s.paused || !dir) return;
+    if (!el || !dir || this.busy || s.phase !== 'playing' || s.paused) return;
     if (dir !== this.dragDir) {
       this.dragDir = dir;
-      this.cardEl.dataset.blocked = this.g.preview(dir).reason ? '1' : '';
+      el.dataset.blocked = this.g.blockReason(this.g.current(), dir) ? '1' : '';
     }
-    const f = this.cardEl.dataset.blocked ? CFG.RUBBER_BAND : 1;
-    const t = dy ? `translate(0,${dy * f}px)` : `translate(${dx * f}px,0) rotate(${(dx * f) / 18}deg)`;
-    this.cardEl.style.transform = t;
-    setStamp(this.g, this.cardEl, dir, Math.abs(dx + dy) / CFG.SWIPE_THRESHOLD_PX);
+    const f = el.dataset.blocked ? 0.3 : 1;
+    el.style.transform = dy ? `translate(0,${dy * f}px)` : `translate(${dx * f}px,0) rotate(${(dx * f) / 20}deg)`;
+    setStamp(this.g, el, dir, Math.abs(dx + dy) / CFG.SWIPE_THRESHOLD_PX);
   }
 
   private release(dir: Dir | null): void {
     this.dragDir = null;
-    const s = this.g.s;
-    const el = this.cardEl;
-    if (dir && s.phase === 'playing' && !s.paused && this.g.swipe(dir)) return; // onSwiped animates
+    const el = this.postEl;
+    if (!el) return;
+    if (dir && !this.busy && this.g.s.phase === 'playing' && !this.g.s.paused && this.g.act(dir)) return;
     this.snapBack(el);
   }
 
@@ -193,186 +241,193 @@ export class App {
     const from = el.style.transform;
     el.style.transform = '';
     setStamp(this.g, el, null, 0);
-    if (from) el.animate([{ transform: from }, { transform: 'none' }], { duration: 180, easing: EASE });
+    if (from) el.animate([{ transform: from }, { transform: 'none' }], { duration: 160, easing: EASE });
   }
 
-  private onSwiped(e: SwipeEvent): void {
-    this.gestures.cancel();
-    this.dragDir = null;
-    const old = this.cardEl;
+  private shake(): void {
+    const el = this.postEl;
+    if (!el) return;
+    this.snapBack(el);
+    el.animate([0, -10, 10, -6, 6, 0].map((v) => ({ transform: `translateX(${v}px)` })), { duration: 260 });
+  }
 
-    if (e.from === e.to) {
-      // card stays (e.g. "close app"): just wobble
-      this.snapBack(old);
-      old.animate([{ transform: 'scale(1)' }, { transform: 'scale(.96)' }, { transform: 'scale(1)' }], { duration: 200 });
-      this.refreshLabels();
+  private onDenied(reason: string): void {
+    this.shake();
+    sfx.deny();
+    if (CFG.BAD_MOVE_PENALTY) this.float(-CFG.BAD_MOVE_PENALTY, reason);
+  }
+
+  /* ── the tally (feedback between posts) ───────────────────────────── */
+
+  private later(ms: number, fn: () => void): void {
+    this.timers.push(window.setTimeout(fn, ms));
+  }
+
+  private clearTimers(): void {
+    this.timers.forEach(clearTimeout);
+    this.timers = [];
+  }
+
+  private onActed(e: ActEvent): void {
+    this.gestures.cancel();
+    this.closeMenu();
+    const s = this.g.s;
+    this.busy = true;
+
+    // fly the old post away
+    const old = this.postEl;
+    if (old) {
+      old.classList.add('leaving');
+      const from = old.style.transform || 'none';
+      old.animate([{ transform: from }, OUT[e.action]], { duration: CFG.ANIM_MS, easing: EASE, fill: 'forwards' }).onfinish = () => old.remove();
+      this.postEl = null;
+    }
+    if (e.action === 'save') sfx.save(); else if (e.action === 'block' || e.action === 'report') sfx.reject(); else sfx.swipe();
+
+    const r = e.result;
+    const checkDelta = e.check?.kind === 'upkeep' ? -e.check.amount : 0;
+    const pre = s.dopa - r.total - checkDelta;
+    const next = () => { this.hudHold = null; this.mountPost(e.action); this.busy = false; };
+
+    if (!CFG.FEEDBACK || !r.steps.length) {
+      if (r.total) this.float(r.total, '');
+      if (e.check) this.showCheck(e);
+      this.later(CFG.ANIM_MS * 0.6, next);
       return;
     }
 
-    // fly the old card out from wherever the finger left it
-    if (e.forced) setStamp(this.g, old, e.dir, 1);
-    const from = old.style.transform || 'none';
-    old.classList.add('leaving');
-    old.animate([{ transform: from }, { transform: OUT[e.dir], opacity: e.meaning === 'left' ? 0.2 : 1 }], { duration: CFG.ANIM_MS, easing: EASE, fill: 'forwards' })
-      .onfinish = () => old.remove();
+    this.hudHold = pre;
+    const T = byId('tally');
+    const big = T.querySelector<HTMLElement>('.t-big')!;
+    const small = T.querySelector<HTMLElement>('.t-small')!;
+    T.className = 'show';
+    const step = CFG.TALLY_STEP_MS;
 
-    this.mountCard(e.dir);
+    r.steps.forEach((st, i) => {
+      this.later(i * step, () => {
+        small.innerHTML = `<span class="${st.cls}">${esc(st.text)}</span>`;
+        big.innerHTML = `<span class="${signCls(st.after)}">${signedText(st.after)}</span>`;
+        big.animate([{ transform: 'scale(1.25)' }, { transform: 'scale(1)' }], { duration: 140 });
+        if (st.effect !== undefined) {
+          document.querySelector<HTMLElement>(`.chip[data-uid="${st.effect}"]`)
+            ?.animate([{ transform: 'translateY(0)' }, { transform: 'translateY(-8px)' }, { transform: 'translateY(0)' }], { duration: 180 });
+        }
+        if (i > 0) sfx.chip(i);
+      });
+    });
 
-    if (e.meaning === 'right') sfx.save();
-    else if (e.meaning === 'left') sfx.reject();
-    else sfx.swipe();
-  }
+    const tEnd = r.steps.length * step;
+    this.later(tEnd, () => {
+      small.innerHTML = '';
+      big.innerHTML = `<span class="${signCls(r.total)}">${signedText(r.total)}</span>`;
+      big.animate([{ transform: 'scale(1.6)' }, { transform: 'scale(1)' }], { duration: 200, easing: EASE });
+      this.hudHold = pre + r.total;
+      sfx.gain(r.total);
+      buzz(r.total >= 0 ? 12 : [20, 30, 20]);
+    });
 
-  private onDenied(dir: Dir, reason: string): void {
-    const el = this.cardEl;
-    this.snapBack(el);
-    const ax = dir === 'left' || dir === 'right' ? 'X' : 'Y';
-    el.animate(
-      [0, -10, 10, -6, 6, 0].map((v) => ({ transform: `translate${ax}(${v}px)` })),
-      { duration: 260, easing: 'ease-out' },
-    );
-    el.classList.add('denied');
-    setTimeout(() => el.classList.remove('denied'), 320);
-    sfx.deny();
-    this.toast(`${ARROW[dir]} ✕ ${reason}`, 'bad');
-    if (CFG.BAD_SWIPE_PENALTY) this.float(-CFG.BAD_SWIPE_PENALTY, 'nope');
-  }
-
-  /* ── HUD ──────────────────────────────────────────────────────────── */
-
-  private renderHud(): void {
-    const g = this.g;
-    const s = g.s;
-    const dopaEl = byId('dopa');
-    setText(dopaEl, fmt(s.dopa));
-    dopaEl.className = s.dopa < 0 ? 'neg' : s.dopa < 5 ? 'low' : '';
-    setText(byId('drain'), `−${g.drainRate().toFixed(2)}/min${CFG.SPEED !== 1 ? ` · ${CFG.SPEED}×` : ''}`);
-    setText(byId('clock'), clock(s.minute));
-
-    const info = byId('bossinfo');
-    const b = s.boss;
-    if (b && s.bossActive) {
-      setText(info, `⚠ ${b.icon} ${b.name} · ${Math.ceil(60 - g.hourMinute())}m`);
-      info.className = 'active';
-    } else if (b) {
-      setText(info, `boss @ :${60 - CFG.BOSS_MINUTES} · ${b.icon} ${b.name}`);
-      info.className = '';
+    let tNext = tEnd + CFG.TALLY_HOLD_MS;
+    if (e.check) {
+      this.later(tNext, () => this.showCheck(e));
+      tNext += CFG.CHECK_HOLD_MS;
     }
-    this.stage.classList.toggle('boss', s.bossActive);
-    this.stage.classList.toggle('dim', s.bossActive && !!b?.dim);
+    this.later(tNext, () => { T.className = ''; next(); });
   }
+
+  private showCheck(e: ActEvent): void {
+    const c = e.check;
+    if (!c) return;
+    const T = byId('tally');
+    T.className = 'show check';
+    const big = T.querySelector<HTMLElement>('.t-big')!;
+    const small = T.querySelector<HTMLElement>('.t-small')!;
+    if (c.kind === 'upkeep') {
+      small.textContent = 'UPKEEP';
+      big.innerHTML = `<span class="c-sub">−${c.amount}</span>`;
+    } else {
+      small.innerHTML = c.ok ? '<span class="c-add">QUOTA OK</span>' : '<span class="c-sub">QUOTA FAILED</span>';
+      big.innerHTML = `<span class="${c.ok ? 'c-add' : 'c-sub'}">${c.amount}</span>`;
+    }
+    big.animate([{ transform: 'scale(1.8)' }, { transform: 'scale(1)' }], { duration: 260, easing: EASE });
+    this.hudHold = null;
+    c.ok ? sfx.hour() : sfx.sleep();
+  }
+
+  /* ── HUD chips (saved effects) ────────────────────────────────────── */
 
   private renderChips(): void {
     const s = this.g.s;
+    const parts: string[] = [];
+    s.effects.forEach((e) => parts.push(`<button class="chip" data-uid="${e.uid}" style="${frameStyle(e.color, 'solid', 2, 0.1)}">${modsHtml(e.mods)}</button>`));
+    for (let i = s.effects.length; i < CFG.SAVE_SLOTS; i++) parts.push(`<div class="chip empty" style="${frameStyle('#444444', 'dashed', 2, 0)}"></div>`);
+    const html = parts.join('');
     const wrap = byId('chips');
-    const html: string[] = [];
-    s.saved.forEach((e) => html.push(this.chipHtml(e)));
-    for (let i = s.saved.length; i < s.slots; i++) html.push('<div class="chip empty"></div>');
-    const out = html.join('');
-    if (wrap.dataset.h !== out) { wrap.innerHTML = out; wrap.dataset.h = out; }
-
-    const mods = byId('mods');
-    const m = s.mods.map((x) => `<span class="mod">${x.icon} ${esc(x.label)}</span>`).join('');
-    if (mods.dataset.h !== m) { mods.innerHTML = m; mods.dataset.h = m; }
+    if (wrap.dataset.h !== html) { wrap.innerHTML = html; wrap.dataset.h = html; }
   }
 
-  private chipHtml(e: EffectInstance): string {
-    const short = typeof e.def.short === 'function' ? e.def.short(this.g.s, e) : e.def.short;
-    const cls = ['chip', e.def.curse ? 'curse' : '', e.inverted ? 'inv' : '', e.def.copy ? 'copy' : ''].join(' ');
-    return `<button class="${cls}" data-uid="${e.uid}"><span class="ci">${e.def.icon}</span><span class="cs">${e.inverted ? '⇄ ' : ''}${esc(short)}</span></button>`;
+  private openChip(uid: number): void {
+    const g = this.g;
+    const i = g.s.effects.findIndex((e) => e.uid === uid);
+    const e = g.s.effects[i];
+    if (!e) return;
+    const body = this.openSheet(`
+      <div class="chip-big" style="${frameStyle(e.color, 'solid', 4, 0.1)}">${modsHtml(e.mods)}</div>
+      <p class="dim">SLOT ${i + 1}/${CFG.SAVE_SLOTS} · APPLIES LEFT ${arrow('right')} RIGHT</p>
+      <div class="row">
+        <button class="btn" data-mv="-1" ${i === 0 ? 'disabled' : ''}>${arrow('left')}</button>
+        <button class="btn" data-mv="1" ${i === g.s.effects.length - 1 ? 'disabled' : ''}>${arrow('right')}</button>
+      </div>
+      <button class="btn red" data-del>DELETE</button>
+      <button class="btn" data-close>CLOSE</button>`);
+    body.querySelectorAll<HTMLElement>('[data-mv]').forEach((b) =>
+      b.addEventListener('click', () => { g.moveEffect(uid, Number(b.dataset.mv)); sfx.click(); this.openChip(uid); }));
+    body.querySelector('[data-del]')?.addEventListener('click', () => { g.removeEffect(uid); sfx.reject(); this.closeSheet(); });
   }
 
-  /* ── floats, toasts, breakdown ────────────────────────────────────── */
-
-  private onGain(r: GainResult): void {
-    if (r.total !== 0) this.float(r.total, '');
-    sfx.gain(r.total);
-    // balatro jiggle: chips fire left → right
-    const effectSteps = r.steps.filter((st) => st.uid !== undefined);
-    effectSteps.forEach((st, i) => {
-      setTimeout(() => {
-        const chip = document.querySelector<HTMLElement>(`.chip[data-uid="${st.uid}"]`);
-        chip?.animate([{ transform: 'scale(1)' }, { transform: 'scale(1.25) rotate(-4deg)' }, { transform: 'scale(1)' }], { duration: 180 });
-        sfx.chip(i);
-      }, 60 + i * 90);
-    });
-    const bd = byId('breakdown');
-    if (!CFG.SHOW_BREAKDOWN || !r.steps.length) { bd.textContent = ''; return; }
-    bd.innerHTML =
-      r.steps.map((st) => `<span class="st st-${st.src}">${st.icon && st.src !== 'base' ? `${st.icon}` : ''}${esc(st.text)}</span>`).join('<i>›</i>') +
-      `<b class="${r.total >= 0 ? 'pos' : 'neg'}">= ${signed(r.total)}</b>`;
-    bd.classList.remove('flash');
-    void bd.offsetWidth;
-    bd.classList.add('flash');
-  }
+  /* ── floats / toast ───────────────────────────────────────────────── */
 
   float(amount: number, label: string): void {
-    const el = h('div', `float ${amount >= 0 ? 'pos' : 'neg'}`, `${signed(amount)}${label ? ` <small>${esc(label)}</small>` : ''}`);
-    el.style.left = `${18 + Math.random() * 30}px`;
+    const el = h('div', `float ${signCls(amount)}`, `${signedText(amount)}${label ? ` <small>${esc(label)}</small>` : ''}`);
+    el.style.left = `${16 + Math.random() * 40}px`;
     byId('floats').appendChild(el);
-    el.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(-46px)', opacity: 0 }], { duration: 1100, easing: 'ease-out' }).onfinish = () => el.remove();
-    const d = byId('dopa');
-    d.animate([{ transform: 'scale(1)' }, { transform: `scale(${amount >= 0 ? 1.18 : 0.9})` }, { transform: 'scale(1)' }], { duration: 160 });
+    el.animate([{ transform: 'translateY(0)', opacity: 1 }, { transform: 'translateY(-40px)', opacity: 0 }], { duration: 1000, easing: 'ease-out' }).onfinish = () => el.remove();
   }
 
-  toast(msg: string, tone: Tone = 'neutral'): void {
-    const wrap = byId('toasts');
-    const el = h('div', `toast t-${tone}`, esc(msg));
-    wrap.appendChild(el);
-    while (wrap.children.length > 3) wrap.firstElementChild?.remove();
-    el.animate([{ opacity: 0, transform: 'translateY(-6px)' }, { opacity: 1, transform: 'none' }], { duration: 150 });
-    setTimeout(() => el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 250 }).onfinish = () => el.remove(), 1800);
-  }
-
-  private onBoss(on: boolean): void {
-    const b = this.g.s.boss;
-    if (on && b) {
-      sfx.boss();
-      this.toast(`⚠ BOSS: ${b.icon} ${b.name} — ${b.desc}`, 'bad');
-      this.stage.animate([{ filter: 'brightness(2)' }, { filter: 'none' }], { duration: 400 });
-    }
-    this.refreshLabels();
-  }
-
-  /* ── eyelids (drowsiness) ─────────────────────────────────────────── */
-
-  private renderLids(): void {
-    const s = this.g.s;
-    const span = Math.max(0.01, CFG.DROWSY_AT - CFG.SLEEP_AT);
-    let c = clamp((CFG.DROWSY_AT - s.dopa) / span, 0, 1);
-    if (CFG.GOD_MODE) c = Math.min(c, 0.6);
-    if (s.phase === 'over') c = 1;
-    // occasional heavy blink when drowsy
-    const blink = c > 0.3 && Math.sin(performance.now() / 700) > 0.97 ? 0.3 : 0;
-    const pct = Math.min(50, (c * 0.85 + blink) * 50);
-    const top = document.querySelector<HTMLElement>('.lid.top');
-    const bot = document.querySelector<HTMLElement>('.lid.bot');
-    if (top && bot) { top.style.height = `${pct}%`; bot.style.height = `${pct}%`; }
-    this.stage.style.filter = c > 0 && s.phase !== 'over' ? `saturate(${1 - c * 0.8}) blur(${c > 0.6 ? (c - 0.6) * 3 : 0}px)` : '';
+  toast(msg: string): void {
+    const t = byId('toast');
+    t.textContent = msg;
+    t.className = 'show';
+    this.later(1400, () => { t.className = ''; });
   }
 
   /* ── notifications ────────────────────────────────────────────────── */
 
+  private outcomeHtml(o: OutcomeDef): string {
+    if (o.special === 'website') return '<span class="c-sub">WEB</span>';
+    if (o.special === 'gift') return '<span class="c-add">GIFT</span>';
+    return o.op ? opHtml(o.op) : '';
+  }
+
   private renderNotif(): void {
     const wrap = byId('notif');
     const n = this.g.s.notif;
-    if (!n) {
-      const cur = wrap.firstElementChild as HTMLElement | null;
-      if (cur) cur.animate([{ opacity: 1 }, { opacity: 0, transform: 'translateY(-30px)' }], { duration: 180 }).onfinish = () => cur.remove();
-      return;
-    }
-    sfx.notif();
     wrap.innerHTML = '';
-    const el = h('div', 'nbanner', `
-      <div class="nicon">${n.def.icon}</div>
-      <div class="ntext"><b>${esc(n.def.from)}</b><span>${esc(n.def.text)}</span><em>tap: open · swipe: dismiss</em></div>
+    if (!n) return;
+    sfx.notif();
+    const el = h('div', 'nb', `
+      <div class="nfrom">${esc(n.def.from)}</div>
+      <div class="nouts">
+        <span>TAP ${this.outcomeHtml(n.def.tap)}</span>
+        <span>SWIPE ${this.outcomeHtml(n.def.swipe)}</span>
+        <span>WAIT ${this.outcomeHtml(n.def.wait)}</span>
+      </div>
       <div class="nbar"></div>`);
+    el.setAttribute('style', frameStyle('#ffffff', 'solid', 3, 0.12));
     wrap.appendChild(el);
-    el.animate([{ transform: 'translateY(-120%)' }, { transform: 'none' }], { duration: 250, easing: EASE });
+    el.animate([{ transform: 'translateY(-120%)' }, { transform: 'none' }], { duration: 220, easing: EASE });
 
-    // own gesture: keep it from reaching the card
     let x0 = 0, y0 = 0, id = -1, dx = 0, dy = 0;
-    el.addEventListener('pointerdown', (e) => { e.stopPropagation(); id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dx = dy = 0; el.setPointerCapture(e.pointerId); });
+    el.addEventListener('pointerdown', (e) => { e.stopPropagation(); unlockAudio(); id = e.pointerId; x0 = e.clientX; y0 = e.clientY; dx = dy = 0; el.setPointerCapture(e.pointerId); });
     el.addEventListener('pointermove', (e) => {
       if (e.pointerId !== id) return;
       e.stopPropagation();
@@ -383,9 +438,8 @@ export class App {
       if (e.pointerId !== id) return;
       e.stopPropagation();
       id = -1;
-      if (this.g.s.phase !== 'playing') { el.style.transform = ''; return; }
-      if (Math.abs(dx) > 60 || dy < -40) this.g.resolveNotif('dismiss');
-      else if (Math.hypot(dx, dy) < 12) this.g.resolveNotif('open');
+      if (Math.abs(dx) > 50 || dy < -30) this.g.resolveNotif('swipe');
+      else if (Math.hypot(dx, dy) < 12) this.g.resolveNotif('tap');
       else el.style.transform = '';
     });
   }
@@ -395,212 +449,184 @@ export class App {
   private renderWebsite(): void {
     const wrap = byId('website');
     const w = this.g.s.website;
-    if (!w) { wrap.innerHTML = ''; wrap.classList.remove('show'); return; }
-    wrap.classList.add('show');
+    if (!w) { wrap.innerHTML = ''; wrap.className = ''; return; }
+    wrap.className = 'show';
     wrap.innerHTML = `
-      <div class="browser">
-        <div class="urlbar">🔒 <span>${esc(w.url)}</span></div>
-        <div class="site">
-          <marquee>${esc(w.headline)} ✦ ${esc(w.headline)}</marquee>
-          <div class="site-body">🤑 🎁 ⌚ 💎 🐺<br>ACT NOW<br><small>dopa draining ×${CFG.WEBSITE_DRAIN_MULT} while you're here</small></div>
-          <div class="popcount">close ${w.popupsLeft} popup${w.popupsLeft === 1 ? '' : 's'} to escape</div>
-        </div>
-        <button class="decoy" style="left:${w.dx}%;top:${w.dy}%">🎁 CLAIM PRIZE ✕</button>
+      <div class="site">
+        <div class="url">HTTPS://W1N-FR33-PR1ZE.BIZ</div>
+        <div class="blink">YOU WON!!!</div>
+        <div class="sitebody">CLOSE ${w.popups} POPUP${w.popups === 1 ? '' : 'S'}<br><span class="c-sub">−${fmt(CFG.WEBSITE_DRAIN)}/S</span></div>
+        <button class="decoy" style="left:${w.dx}%;top:${w.dy}%">CLAIM PRIZE ${ICON.x}</button>
         <div class="popup" style="left:${w.x}%;top:${w.y}%">
-          <button class="realx" aria-label="close">✕</button>
-          <div>WAIT!! don't leave 🥺</div>
+          <button class="realx" aria-label="close">${ICON.x}</button>
+          DON'T GO!!
         </div>
       </div>`;
     wrap.querySelector('.realx')?.addEventListener('pointerdown', (e) => { e.stopPropagation(); sfx.click(); buzz(10); this.g.websiteTap(true); });
     wrap.querySelector('.decoy')?.addEventListener('pointerdown', (e) => { e.stopPropagation(); sfx.deny(); this.g.websiteTap(false); });
   }
 
-  /* ── overlays: hour break / sleep / win / pause ───────────────────── */
+  /* ── overlays ─────────────────────────────────────────────────────── */
 
   private renderOverlay(): void {
     const s = this.g.s;
     const ov = byId('overlay');
-    if (this.pauseReasons.has('menu')) return; // pause menu owns the overlay
-    if (s.phase === 'hourbreak') { sfx.hour(); ov.innerHTML = this.hourBreakHtml(); this.showOverlay(); }
-    else if (s.phase === 'over') { sfx.sleep(); ov.innerHTML = this.endHtml(false); this.showOverlay(); }
-    else if (s.phase === 'won') { sfx.win(); ov.innerHTML = this.endHtml(true); this.showOverlay(); }
-    else { this.hideOverlay(); return; }
-
-    ov.querySelectorAll<HTMLElement>('[data-choice]').forEach((b) =>
-      b.addEventListener('click', () => { sfx.click(); this.g.choose(b.dataset.choice || null); }),
-    );
-    ov.querySelector('[data-act=again]')?.addEventListener('click', () => this.restart());
-    ov.querySelector('[data-act=same]')?.addEventListener('click', () => this.restart(this.g.s.seed));
-    ov.querySelector('[data-act=endless]')?.addEventListener('click', () => this.g.continueEndless());
-    ov.querySelector('[data-act=tweaks]')?.addEventListener('click', () => openTweaks(this.g, this));
+    if (this.pauseReasons.has('menu')) return;
+    if (s.phase === 'menu') ov.innerHTML = this.menuHtml();
+    else if (s.phase === 'over') { sfx.sleep(); ov.innerHTML = this.endHtml(false); }
+    else if (s.phase === 'won') { sfx.win(); ov.innerHTML = this.endHtml(true); }
+    else { ov.className = ''; ov.innerHTML = ''; return; }
+    ov.className = 'show';
+    this.bindOverlay(ov);
   }
 
-  private showOverlay(): void {
-    const ov = byId('overlay');
-    ov.classList.add('show');
-    ov.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250 });
-  }
-  private hideOverlay(): void {
-    const ov = byId('overlay');
-    ov.classList.remove('show');
-    ov.innerHTML = '';
+  private bindOverlay(ov: HTMLElement): void {
+    ov.querySelectorAll<HTMLElement>('[data-mode]').forEach((b) =>
+      b.addEventListener('click', () => this.startMode(b.dataset.mode as ModeId)));
+    ov.querySelector('[data-a=again]')?.addEventListener('click', () => this.startMode(this.g.s.mode));
+    ov.querySelector('[data-a=modes]')?.addEventListener('click', () => this.toMenu());
+    ov.querySelector('[data-a=help]')?.addEventListener('click', () => this.openHelp());
+    ov.querySelector('[data-a=tweaks]')?.addEventListener('click', () => openTweaks(this.g, this));
+    ov.querySelector('[data-a=resume]')?.addEventListener('click', () => this.closePause());
+    ov.querySelector('[data-a=restart]')?.addEventListener('click', () => { this.closePause(); this.startMode(this.g.s.mode); });
+    ov.querySelector('[data-a=sound]')?.addEventListener('click', (e) => {
+      CFG.SOUND = !CFG.SOUND;
+      (e.currentTarget as HTMLElement).textContent = `SOUND ${CFG.SOUND ? 'ON' : 'OFF'}`;
+    });
   }
 
-  private hourBreakHtml(): string {
-    const g = this.g;
-    const s = g.s;
-    const b = s.boss;
-    const choices = s.choices
-      .map((c) => `<button class="choice" data-choice="${c.id}"><span class="ch-i">${c.icon}</span><b>${esc(c.name)}</b><small>${esc(c.desc)}</small></button>`)
-      .join('');
+  startMode(mode: ModeId): void {
+    unlockAudio();
+    this.clearTimers();
+    this.busy = false;
+    this.hudHold = null;
+    this.pauseReasons.clear();
+    this.closeSheet();
+    byId('tally').className = '';
+    this.g.start(mode);
+    this.shownDopa = this.g.s.dopa;
+    this.renderChips();
+    this.mountPost(null);
+  }
+
+  private toMenu(): void {
+    this.clearTimers();
+    this.pauseReasons.clear();
+    this.closeSheet();
+    this.g.s.phase = 'menu';
+    this.g.s.notif = null;
+    this.renderNotif();
+    this.renderOverlay();
+  }
+
+  private menuHtml(): string {
+    const rec = loadRecords();
+    const modes = MODES.map((m) => {
+      const r = rec[m.id];
+      const best = r ? `BEST ${clock(r.best)} · ${r.wins}/${r.runs}` : 'NEW';
+      return `<button class="mode" data-mode="${m.id}" style="${frameStyle('#ffffff', 'solid', 3, 0.06)}"><b>${m.name}</b><span>${m.line}</span><em>${best}</em></button>`;
+    }).join('');
     return `
-      <div class="ov-inner scroll">
-        <div class="kicker">☀️ ${clock(s.minute)}</div>
-        <h1>hour ${s.hour} survived</h1>
-        <p class="sub">dopa ${fmt(s.dopa)} · drain now −${g.drainRate().toFixed(2)}/min</p>
-        ${b ? `<div class="nextboss">next boss @ :${60 - CFG.BOSS_MINUTES}<br><b>${b.icon} ${esc(b.name)}</b><br><small>${esc(b.desc)}</small></div>` : ''}
-        <div class="choices">${choices}</div>
-        <button class="btn ghost" data-choice="">keep scrolling →</button>
+      <div class="ov scroll">
+        <h1 class="title">DOPADOOM</h1>
+        <p class="dim">STAY AWAKE TILL 08:00</p>
+        ${modes}
+        <div class="row">
+          <button class="btn" data-a="help">HOW TO</button>
+          <button class="btn" data-a="tweaks">TWEAKS</button>
+        </div>
+        <a class="dim small" href="./pilot1/">PLAY PILOT 1</a>
       </div>`;
   }
 
   private endHtml(won: boolean): string {
     const s = this.g.s;
     const st = s.stats;
-    const r = loadRecords();
-    const rows: [string, string][] = [
-      ['swipes', String(st.swipes)], ['reels seen', String(st.cardsSeen)], ['saved', String(st.saved)],
-      ['rejected', String(st.rejected)], ['peak dopa', fmt(st.peakDopa)], ['lowest', fmt(st.lowDopa)],
-      ['ads watched', String(st.adsWatched)], ['websites', String(st.websites)], ['denied', String(st.denied)],
-    ];
+    const mode = MODES.find((m) => m.id === s.mode)?.name ?? '';
     return `
-      <div class="ov-inner scroll">
-        <div class="big">${won ? '🌅' : '💤'}</div>
-        <h1>${won ? `${clock(s.minute)}. you made it.` : `you fell asleep at ${clock(s.minute)}`}</h1>
-        <p class="sub">${won ? 'the sun is up. you are not okay.' : esc(s.deathMsg)}</p>
-        <div class="stats">${rows.map(([k, v]) => `<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>
-        <div class="saved-final">${s.saved.map((e) => `${e.def.icon} ${esc(e.def.name)}`).join(' · ') || 'no saved effects'}</div>
-        <p class="rec">best ${clock(r.bestMinute)} · runs ${r.runs} · wins ${r.wins} · seed ${esc(s.seed)}</p>
-        ${won ? '<button class="btn" data-act="endless">keep scrolling (endless)</button>' : ''}
-        <button class="btn ${won ? 'ghost' : ''}" data-act="again">${won ? 'new run' : 'wake up. scroll again.'}</button>
-        <button class="btn ghost" data-act="same">replay same seed</button>
-        <button class="btn ghost small" data-act="tweaks">⚙ tweaks</button>
+      <div class="ov scroll">
+        <p class="dim">${mode}</p>
+        <h1 class="title ${won ? 'c-add' : 'c-sub'}">${won ? 'AWAKE' : 'ASLEEP'}</h1>
+        <div class="bigclock">${clock(s.minute)}</div>
+        <p class="dim">${won ? 'YOU MADE IT' : esc(s.deathMsg)}</p>
+        <div class="stats">
+          <div><span>MOVES</span><b>${st.actions}</b></div>
+          <div><span>PEAK</span><b>${fmt(st.peak)}</b></div>
+          <div><span>LIKED</span><b>${st.liked}</b></div>
+          <div><span>DISLIKED</span><b>${st.disliked}</b></div>
+          <div><span>SAVED</span><b>${st.saved}</b></div>
+          <div><span>ADS</span><b>${st.ads}</b></div>
+        </div>
+        <button class="btn big" data-a="again">AGAIN</button>
+        <button class="btn" data-a="modes">MODES</button>
       </div>`;
-  }
-
-  restart(seed?: string): void {
-    this.g.reset(seed);
-    byId('breakdown').innerHTML = '';
-    byId('toasts').innerHTML = '';
   }
 
   openPause(): void {
     const s = this.g.s;
-    if (s.phase === 'over' || s.phase === 'won') return;
+    if (s.phase !== 'playing' && s.phase !== 'website') return;
     this.setPaused('menu', true);
     const ov = byId('overlay');
-    const speeds = [0.5, 1, 2, 4].map((v) => `<button class="seg ${CFG.SPEED === v ? 'on' : ''}" data-speed="${v}">${v}×</button>`).join('');
     ov.innerHTML = `
-      <div class="ov-inner scroll">
-        <div class="kicker">${clock(s.minute)} · seed ${esc(s.seed)}</div>
-        <h1>paused</h1>
-        <button class="btn" data-act="resume">resume</button>
-        <div class="segrow">${speeds}</div>
-        <button class="btn ghost" data-act="sound">sound: ${CFG.SOUND ? 'on' : 'off'}</button>
-        <button class="btn ghost" data-act="tweaks">⚙ tweaks & debug</button>
-        <button class="btn ghost" data-act="help">how to play</button>
-        <button class="btn ghost" data-act="restart">restart run</button>
+      <div class="ov scroll">
+        <h1 class="title">PAUSED</h1>
+        <button class="btn big" data-a="resume">RESUME</button>
+        <button class="btn" data-a="restart">RESTART</button>
+        <button class="btn" data-a="modes">MODES</button>
+        <button class="btn" data-a="help">HOW TO</button>
+        <button class="btn" data-a="tweaks">TWEAKS</button>
+        <button class="btn" data-a="sound">SOUND ${CFG.SOUND ? 'ON' : 'OFF'}</button>
       </div>`;
-    this.showOverlay();
-    ov.querySelector('[data-act=resume]')?.addEventListener('click', () => this.closeOverlayPause());
-    ov.querySelector('[data-act=restart]')?.addEventListener('click', () => { this.closeOverlayPause(); this.restart(); });
-    ov.querySelector('[data-act=tweaks]')?.addEventListener('click', () => openTweaks(this.g, this));
-    ov.querySelector('[data-act=help]')?.addEventListener('click', () => this.openHelp());
-    ov.querySelector('[data-act=sound]')?.addEventListener('click', (e) => {
-      CFG.SOUND = !CFG.SOUND;
-      (e.target as HTMLElement).textContent = `sound: ${CFG.SOUND ? 'on' : 'off'}`;
-    });
-    ov.querySelectorAll<HTMLElement>('[data-speed]').forEach((b) =>
-      b.addEventListener('click', () => {
-        CFG.SPEED = Number(b.dataset.speed);
-        ov.querySelectorAll('[data-speed]').forEach((x) => x.classList.toggle('on', x === b));
-      }),
-    );
+    ov.className = 'show';
+    this.bindOverlay(ov);
   }
 
-  closeOverlayPause(): void {
+  closePause(): void {
     this.setPaused('menu', false);
-    this.hideOverlay();
-    this.renderOverlay(); // phase overlay (hour break etc) comes back if needed
+    byId('overlay').className = '';
+    byId('overlay').innerHTML = '';
+    this.renderOverlay();
   }
 
-  /* ── sheets (bottom) ──────────────────────────────────────────────── */
+  /* ── sheets ───────────────────────────────────────────────────────── */
 
-  openSheet(html: string, onClose?: () => void): HTMLElement {
+  openSheet(html: string): HTMLElement {
     const sh = byId('sheet');
     sh.innerHTML = `<div class="sheet-bg"></div><div class="sheet-body scroll">${html}</div>`;
-    sh.classList.add('show');
-    if (CFG.PAUSE_ON_SHEET) this.setPaused('sheet', true);
-    const close = () => { this.closeSheet(); onClose?.(); };
-    sh.querySelector('.sheet-bg')?.addEventListener('click', close);
-    sh.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', close));
+    sh.className = 'show';
+    this.setPaused('sheet', true);
+    sh.querySelector('.sheet-bg')?.addEventListener('click', () => this.closeSheet());
+    sh.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', () => this.closeSheet()));
     const body = sh.querySelector<HTMLElement>('.sheet-body')!;
-    body.animate([{ transform: 'translateY(100%)' }, { transform: 'none' }], { duration: 220, easing: EASE });
+    body.animate([{ transform: 'translateY(100%)' }, { transform: 'none' }], { duration: 200, easing: EASE });
     return body;
   }
 
   closeSheet(): void {
     const sh = byId('sheet');
-    sh.classList.remove('show');
+    sh.className = '';
     sh.innerHTML = '';
     this.setPaused('sheet', false);
   }
 
-  private openEffectSheet(uid: number): void {
-    const g = this.g;
-    const s = g.s;
-    const i = s.saved.findIndex((e) => e.uid === uid);
-    const e = s.saved[i];
-    if (!e) return;
-    const cost = g.effectCost(e);
-    const trig = e.def.triggers ? e.def.triggers.map((d) => ARROW[d]).join(' ') : 'all swipes';
-    const body = this.openSheet(`
-      <div class="fx-head"><span class="fx-icon">${e.def.icon}</span><div><h2>${esc(e.def.name)}</h2><small>slot ${i + 1} of ${s.slots} · triggers: ${trig}</small></div></div>
-      <p class="fx-desc">${esc(e.def.desc)}</p>
-      ${e.inverted ? '<p class="fx-warn">⇄ INVERTED — its effect is mirrored.</p>' : ''}
-      ${e.def.curse ? '<p class="fx-warn">☠ curse</p>' : ''}
-      <p class="fx-note">effects apply left → right. order matters.</p>
-      <div class="fx-btns">
-        <button class="btn ghost" data-mv="-1" ${i === 0 ? 'disabled' : ''}>◀ move left</button>
-        <button class="btn ghost" data-mv="1" ${i === s.saved.length - 1 ? 'disabled' : ''}>move right ▶</button>
-      </div>
-      <button class="btn ${cost > 0 ? 'danger' : ''}" data-del>${cost < 0 ? `sell (+${fmt(-cost)} dopa)` : cost === 0 ? 'delete (free)' : `delete (−${fmt(cost)} dopa)`}</button>
-      <button class="btn ghost" data-close>close</button>
-    `);
-    body.querySelectorAll<HTMLElement>('[data-mv]').forEach((b) =>
-      b.addEventListener('click', () => { g.moveEffect(uid, Number(b.dataset.mv)); sfx.click(); this.openEffectSheet(uid); }),
-    );
-    body.querySelector('[data-del]')?.addEventListener('click', () => { g.removeEffect(uid); sfx.reject(); this.closeSheet(); });
-  }
-
   private openHelp(): void {
+    const A = arrow;
     this.openSheet(`
-      <h2>how to play</h2>
-      <p>stay awake until <b>08:00</b>. dopa drains every fake minute. hit <b>${CFG.SLEEP_AT}</b> and you sleep.</p>
-      <ul class="help">
-        <li><b>↑ skip</b> next reel. base +${CFG.BASE_SWIPE_GAIN}.</li>
-        <li><b>↓ back</b> previous reel (if you didn't reject it). base +${CFG.BASE_SWIPE_GAIN}.</li>
-        <li><b>← reject</b> one-shot effect, the reel is gone forever.</li>
-        <li><b>→ save</b> put its effect in your saved strip (max ${CFG.SAVED_SLOTS}).</li>
-        <li>every edge of a reel tells you what that swipe does, <b>= total</b> includes your effects.</li>
-        <li>swiping the same way on the same reel again decays: ×1 → ×.9 → ×.8 …</li>
-        <li>saved effects apply <b>left → right</b>. tap a chip to reorder or delete.</li>
-        <li>last ${CFG.BOSS_MINUTES} minutes of every hour: <b>boss</b>. drain ×${CFG.BOSS_DRAIN_MULT} + a rule.</li>
-        <li>ads can't be rejected while playing; skipping early costs dopa. premium ads trap you on a website.</li>
-        <li>notifications: tap to open, swipe to dismiss, or ignore them.</li>
-        <li>desktop: arrow keys / WASD, space = pause.</li>
-      </ul>
-      <button class="btn ghost" data-close>ok</button>
-    `);
+      <h2>HOW TO</h2>
+      <div class="help">
+        <div>${A('up')} SKIP</div><div>${A('down')} BACK</div>
+        <div>${A('left')} DISLIKE</div><div>${A('right')} LIKE</div>
+        <div class="wide">${ICON.bookmark} SAVE: TAKE ITS EFFECT INSTEAD</div>
+        <div class="wide">${ICON.kebab} BLOCK / REPORT</div>
+        <div class="wide">${A('left')} ${A('right')} ONCE PER POST</div>
+        <div class="wide">SAVED EFFECTS: LEFT ${A('right')} RIGHT</div>
+        <div class="wide"><span class="c-add">+</span> <span class="c-mul">×</span> GOOD · <span class="c-sub">−</span> <span class="c-div">÷</span> BAD</div>
+        <div class="wide">ADS CAN'T BE SKIPPED. TRYING COSTS.</div>
+        <div class="wide">UPKEEP: PAY EVERY ${CFG.UPKEEP_EVERY} MOVES</div>
+        <div class="wide">QUOTA: HAVE ENOUGH EVERY ${CFG.QUOTA_EVERY}</div>
+        <div class="wide">CLOCK: REAL TIME DRAIN</div>
+        <div class="wide">SLEEP AT ${CFG.SLEEP_AT}</div>
+      </div>
+      <button class="btn" data-close>OK</button>`);
   }
 }

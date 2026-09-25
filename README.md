@@ -1,82 +1,86 @@
 # DOPADOOM
 
-Stay awake until 08:00. The feed is your only friend.
-A doomscroll roguelike: Balatro's scoring, a four-swipe reel feed, and a clock that drains your dopamine.
+Stay awake until 08:00 by scrolling the feed.
+**v2: mechanics only.** Theme and satire come later.
 
-**Play:** https://heelgueta.github.io/dopadoom/. On your phone, use *Add to Home Screen* to get fullscreen.
+**Play:** https://heelgueta.github.io/dopadoom/
+**Pilot 1** (the first, feature-heavy prototype): https://heelgueta.github.io/dopadoom/pilot1/. Its source is in `pilot1/` and it's also git tag `pilot1`.
 
-## How it plays
+## Rules
 
-| swipe | meaning | default |
+Every number is an **op on your dopa**: `+2` add, `−2` subtract, `×2` multiply, `÷2` divide, `×2/÷2` coin flip.
+Colours: **blue + / cyan ×** are good, **red − / pink ÷** are bad.
+
+| input | does |
+|---|---|
+| swipe ↑ | skip to the next post |
+| swipe ↓ | go back (not to blocked posts) |
+| swipe ← | dislike (once per post) |
+| swipe → | like (once per post) |
+| bookmark button | **save**: take the post's effect *instead of* swiping it |
+| ⋮ button | block / report (removes the post; report pays off on FAKE NEWS) |
+
+- **Saved effects** (5 slots) modify swipe gains, applied **left → right**, so order matters. Tap a chip to move or delete it.
+- Repeating ↑/↓ on the same post decays: ×1, ×0.9, ×0.8 …
+- **Tally:** after every move the result is added up in the middle of the screen, and you can't move until it's done.
+- **Ads** can't be skipped. Each try costs more dopa and adds time. Trying to skip a **premium ad** traps you on a scam website.
+- **Notifications** show all three outcomes up front: `TAP +2  SWIPE −1  WAIT −2`.
+- You fall asleep at −10.
+
+## Modes (pick on the start screen)
+
+| mode | how the night hurts |
+|---|---|
+| **UPKEEP** | every 12 moves you **pay** dopa (10, 16, 26 … ×1.6 each time) |
+| **QUOTA** | every 12 moves you must **have** dopa (15, 28, 51 … ×1.85). Not spent |
+| **CLOCK** | real-time drain that grows each hour, plus a 1%/s leak on your bank |
+
+UPKEEP and QUOTA are turn based: each move is 5 fake minutes, so 96 moves reach 08:00.
+
+Bot simulations of the current numbers (12 runs each):
+
+| mode | only swipes up | greedy (takes best visible number) |
 |---|---|---|
-| ↑ | **skip** to the next reel | +1 base |
-| ↓ | **back** to the previous reel you didn't reject | +1 base |
-| ← | **reject**: one-shot effect, the reel is gone forever | card-specific |
-| → | **save**: puts the reel's effect in your saved strip (5 slots) | card-specific |
+| upkeep | asleep 05:00–07:00 | wins ~67% |
+| quota | asleep 05:00–06:00 | wins ~40% |
+| clock (1 move per 2.5s) | asleep 02:30–04:30 | wins ~40% |
 
-- Every edge of a card says what that swipe does. `= +3.4` is the real total, including your saved effects and repeat decay.
-- **Saved effects** run left → right, so order matters (+2 then ×2 ≠ ×2 then +2). Tap a chip to move, delete, or sell it.
-- **Repeat decay:** the same swipe on the same card is worth ×1, then ×0.9, then ×0.8 …
-- **Clock:** 1 fake hour = 60 real seconds at 1×. Dopa drains every minute and the drain grows every hour. Holding lots of dopa also leaks faster (tolerance).
-- **Bosses:** the last 10 minutes of every hour, drain ×2 plus a rule (shadowban, mirror world, autoplay, brainrot…). The next boss is shown in the HUD.
-- **Hour breaks:** coffee, energy drink, melatonin, doom gamble…
-- **Ads** can't be rejected while playing, and skipping early costs dopa. **Premium ads** trap you on a scam website until you find the real ✕.
-- **Notifications:** tap to open, swipe to dismiss, or ignore them.
-- Dopa can go **negative** (the drowsy zone: eyes close, drain speeds up). You fall asleep at −10.
-- Desktop: arrow keys / WASD. Space = pause. `?seed=abc` replays a run.
+## Tuning
 
-## Tuning on your phone
+Pause → **TWEAKS**: every number in `src/config.ts` is a slider. Changes are live and saved on the device. There are also debug buttons (+dopa, ad next, premium next, notification, gift).
+**COPY CONFIG** gives you JSON to paste into `DEFAULTS` in `src/config.ts`.
 
-⏸ → **tweaks & debug**. Every number in `src/config.ts` has a slider there. Changes are live and saved on that device. Debug buttons: +dopa, jump to boss, end hour, spawn a notification, show any card, give any effect.
+## Content
 
-When something feels right, tap **copy config JSON** and paste the values into `DEFAULTS` in `src/config.ts`. That makes them the new baseline for everyone.
+Post types are placeholders written in the same notation you see in game (`src/content/posts.ts`):
+
+```
+'u+1 d+1 lx2 r+1 | +2u'     →  ↑+1  ↓+1  ←×2  →+1   save: +2 per ↑
+B = block value, R = report value, ?x2,/2 = coin flip, a = all swipes
+```
+
+Notifications: `src/content/notifs.ts`, e.g. `n('mom', 'MOM', '+2', '-1', '-2')` = tap / swipe / wait.
 
 ## Dev
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173, and on your LAN (the --host flag is on)
-npm run build        # typecheck + production build → dist/
+npm run dev      # http://localhost:5173 (+ LAN)
+npm run build    # typecheck + build v2 + build pilot1 into dist/pilot1
 ```
 
-To test on a phone during dev, open `http://<your-computer-lan-ip>:5173` on the same wifi.
-
-**Deploy:** push to `main`. GitHub Actions (`.github/workflows/deploy.yml`) builds and publishes to Pages in about a minute.
-
-## Where things live
+Pushing to `main` deploys to GitHub Pages.
 
 ```
 src/
-  config.ts              ALL tunable numbers + tweak-panel metadata
-  types.ts               data model (cards, effects, bosses, state, GameApi)
-  engine/
-    scoring.ts           THE gain pipeline: base → card → saved effects L→R → mods → boss → decay
-    game.ts              rules + state + events. no DOM
-  content/               ← where most future work happens
-    cards.ts             every reel (helpers: plus, times, save, blocked, ad)
-    effects.ts           every saved effect
-    bosses.ts            end-of-hour bosses
-    notifications.ts     banners
-    choices.ts           hour-break options
-  ui/
-    app.ts               HUD, animations, overlays, sheets
-    cardView.ts          card rendering + live edge previews
-    gestures.ts          swipe recogniser (thresholds from config)
-    tweaks.ts            the tweaks/debug panel
-    audio.ts             synth bleeps + vibration
-  styles.css             look & feel (placeholder art: colour per card kind)
+  config.ts          all tunables + tweak panel metadata
+  types.ts           data model
+  engine/ops.ts      ops, mods, template parser
+  engine/game.ts     rules, modes, scoring pipeline, ads, website, notifications (no DOM)
+  content/           post types, notifications
+  ui/app.ts          HUD, tally, overlays, sheets
+  ui/postView.ts     post rendering
+  ui/pixel.ts        pixel icons / frames / placeholder art (generated SVG, no emoji)
+  ui/gestures.ts     swipe recogniser (from pilot1)
+pilot1/              frozen first prototype
 ```
-
-**Add a card:** append an object to `POOL` in `content/cards.ts`.
-**Add an effect:** append to `list` in `content/effects.ts` and reference its id from a card's `right: save('id')`.
-The engine doesn't change for either.
-
-## What to test first
-
-Play 3 runs, then note:
-1. When did you fall asleep? Too early or too late → `DRAIN_BASE`, `DRAIN_HOUR_EXP`, `DRAIN_TOLERANCE`.
-2. Did you ever *want* to swipe down? If not, back-swipes need better card values.
-3. Did saving feel worth a slot? Did you reorder chips?
-4. Did you try farming ↑/↓ on the same cards? Did decay stop it without feeling bad?
-5. Is 1× too fast or too slow? Try `SPEED` 0.5 / 2.
-6. Swipe feel: `SWIPE_THRESHOLD_PX`, `FLICK_VELOCITY`, `ANIM_MS`.
